@@ -1,5 +1,6 @@
 """Autorun: launchd plists, Background Task Management records, crontab, shell rc files."""
 import hashlib
+import os
 import plistlib
 import re
 import shlex
@@ -7,9 +8,17 @@ from pathlib import Path
 
 from ..findings import Finding, not_scanned, result
 
-INTERPRETERS = {"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env", "/usr/bin/osascript",
-                "/usr/bin/python3", "/usr/bin/perl", "/usr/bin/ruby", "/opt/homebrew/bin/node",
-                "/opt/homebrew/bin/python3", "/opt/homebrew/bin/bun"}
+INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "env", "osascript", "perl",
+                "ruby", "node", "bun", "deno", "php", "swift", "lua", "Rscript"}
+PY_NAME = re.compile(r"(python|pypy)[0-9.]*")
+
+
+def is_script(prog: str, args: list) -> bool:
+    base = os.path.basename(prog)
+    return (base in INTERPRETERS or bool(PY_NAME.fullmatch(base))
+            or (len(args) > 1 and args[1] in ("-c", "-e")))
+
+
 RC_FILES = (".zshrc", ".zprofile", ".zshenv", ".zlogin", ".bash_profile", ".bashrc", ".profile")
 BTM_SKIP_TYPES = ("legacy agent", "legacy daemon")   # plists are covered by scan_launchd
 REC = re.compile(r"^\s*#\d+:\s*$")
@@ -38,13 +47,18 @@ def scan_launchd(ctx, dirs) -> list:
     findings, denied = [], []
     for d in dirs:
         try:
-            entries = sorted(d.glob("*.plist"))
+            with os.scandir(d) as it:
+                entries = sorted(Path(e.path) for e in it if e.name.endswith(".plist"))
+        except FileNotFoundError:
+            continue
         except PermissionError:
             denied.append(str(d))
             continue
         for p in entries:
             try:
                 data = plistlib.loads(p.read_bytes())
+                if not isinstance(data, dict) or not isinstance(data.get("ProgramArguments", []), list):
+                    raise ValueError("unexpected plist shape")
             except PermissionError:
                 denied.append(str(p))
                 continue
@@ -55,7 +69,7 @@ def scan_launchd(ctx, dirs) -> list:
             args = [str(a) for a in data.get("ProgramArguments") or []]
             prog = str(data.get("Program") or (args[0] if args else ""))
             sig = signer(ctx, prog) if prog else "unsigned"
-            script = prog in INTERPRETERS
+            script = is_script(prog, args)
             label = str(data.get("Label", p.stem))
             domain = f"gui/{ctx.uid}" if d == ctx.home / "Library/LaunchAgents" else "system"
             findings.append(Finding(
@@ -94,6 +108,8 @@ def scan_btm(ctx):
     r = ctx.cmd(["/usr/bin/sfltool", "dumpbtm"], timeout=300)
     if r.missing or r.timed_out or r.rc != 0:
         return not_scanned("persistence.btm", "sfltool dumpbtm failed or timed out")
+    if not re.search(rf"Records for UID {ctx.uid}\b", r.stdout):
+        return not_scanned("persistence.btm", "sfltool output had no records section for this user")
     out = []
     for rec in parse_btm(r.stdout, ctx.uid):
         typ = rec.get("Type", "")

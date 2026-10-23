@@ -138,6 +138,44 @@ class PersistenceTest(unittest.TestCase):
         fp2 = by_check(persistence.run(ctx), "persistence.rc").findings[0].fingerprint
         self.assertNotEqual(fp1, fp2)
 
+    def test_malformed_plist_shapes_are_unparseable(self):
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        d = ctx.home / "Library/LaunchAgents"
+        d.mkdir(parents=True)
+        (d / "arr.plist").write_bytes(plistlib.dumps(["a", "b"]))
+        (d / "int.plist").write_bytes(plistlib.dumps({"Label": "x", "ProgramArguments": 5}))
+        write_plist(ctx, "ok.plist", ["/opt/x"])
+        fs = by_check(persistence.run(ctx), "persistence.launchd").findings
+        self.assertEqual(sorted(f.severity for f in fs), ["medium"] * 3)
+        self.assertEqual(sum(1 for f in fs if f.key.get("unparseable")), 2)
+
+    def test_denied_dir_is_partial_not_clean(self):
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        d = ctx.home / "Library/LaunchAgents"
+        d.mkdir(parents=True)
+        d.chmod(0)
+        self.addCleanup(d.chmod, 0o700)
+        names = [r.check for r in persistence.run(ctx) if r.status == "not_scanned"]
+        self.assertIn("persistence.launchd.partial", names)
+
+    def test_interpreter_by_basename_and_dash_c(self):
+        for prog in ("/opt/homebrew/bin/bash", "/usr/local/bin/python3.12", "/bin/ksh"):
+            ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+            write_plist(ctx, "a.plist", [prog])
+            f = by_check(persistence.run(ctx), "persistence.launchd").findings[0]
+            self.assertEqual(f.severity, "critical", prog)
+            self.assertIn("(script)", f.title)
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        write_plist(ctx, "a.plist", ["/opt/x", "-c", "boom"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "critical")
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        write_plist(ctx, "a.plist", ["/opt/x", "--flag"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "medium")
+
+    def test_btm_without_our_section_is_not_scanned(self):
+        ctx = tmp_ctx({"/usr/bin/sfltool": (0, "", "")})
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.btm").status, "not_scanned")
+
 
 if __name__ == "__main__":
     unittest.main()
