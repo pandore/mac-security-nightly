@@ -52,10 +52,12 @@ def run(argv, *, env: dict[str, str], timeout: float, stdin_text: str | None = N
     argv = tuple(str(a) for a in argv)
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", env=env, cwd=cwd,
                                 start_new_session=True)
     except FileNotFoundError:
         return CmdResult(argv, None, "", "", missing=True)
+    except OSError as e:   # e.g. PermissionError on a non-executable path
+        return CmdResult(argv, None, "", str(e), missing=True)
     try:
         out, err = proc.communicate(input=stdin_text, timeout=timeout)
         return CmdResult(argv, proc.returncode, out, err)

@@ -48,6 +48,16 @@ class RunnerTest(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    def test_undecodable_output_does_not_raise(self):
+        r = runner.run(["/usr/bin/printf", "\\377\\376"], env=runner.scanner_env(self.sandbox), timeout=5)
+        self.assertEqual(r.rc, 0)
+
+    def test_non_executable_is_missing(self):
+        f = self.sandbox.parent / "noexec"
+        f.write_text("x")
+        r = runner.run([str(f)], env=runner.scanner_env(self.sandbox), timeout=5)
+        self.assertTrue(r.missing)
+
     def test_missing_binary(self):
         r = runner.run(["/nonexistent/tool"], env=runner.scanner_env(self.sandbox), timeout=5)
         self.assertTrue(r.missing)

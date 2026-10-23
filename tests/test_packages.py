@@ -119,6 +119,31 @@ class PackagesTest(unittest.TestCase):
         self.assertIn("unexpected output shape", by(res, "packages.osv").reason)
         self.assertIn("unexpected output shape", by(res, "packages.grype").reason)
 
+    def test_blank_output_with_failure_is_not_scanned(self):
+        res = packages.run(self.ctx(**{BREW: (1, "", "Error: unknown command")}))
+        self.assertEqual(by(res, "packages.brew").status, "not_scanned")
+        self.assertEqual(by(res, "updates.npm").status, "ok")
+
+    def test_softwareupdate_failure_is_not_scanned(self):
+        res = packages.run(self.ctx(**{"/usr/sbin/softwareupdate": (1, "", "error")}))
+        self.assertEqual(by(res, "updates.macos").status, "not_scanned")
+
+    def test_osv_keeps_findings_when_later_root_fails(self):
+        c = self.ctx()
+        r2 = c.scan_roots[0].parent / "r2"
+        c2 = type(c)(home=c.home, scan_roots=(c.scan_roots[0], r2), sandbox=c.sandbox, uid=c.uid,
+                     system_dirs=False, responses=dict(c.responses))
+        o = "/opt/homebrew/bin/osv-scanner"
+        c2.responses[(o, "scan", "source", "-r", str(c.scan_roots[0]), "--format", "json")] = ok(OSV, rc=1)
+        c2.responses[(o, "scan", "source", "-r", str(r2), "--format", "json")] = "timeout"
+        res = packages.run(c2)
+        self.assertEqual([f.severity for f in by(res, "packages.osv").findings].count("critical"), 1)
+        self.assertEqual(by(res, "packages.osv.partial").status, "not_scanned")
+
+    def test_npm_error_payload_ignored(self):
+        res = packages.run(self.ctx(**{"/opt/homebrew/bin/npm": ok({"error": {"code": "E"}, **NPM}, rc=1)}))
+        self.assertEqual([f.key["package"] for f in by(res, "updates.npm").findings], ["openclaw"])
+
 
 if __name__ == "__main__":
     unittest.main()

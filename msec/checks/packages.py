@@ -54,8 +54,12 @@ def _json(r, check: str):
         return None, not_scanned(check, "tool not installed")
     if r.timed_out:
         return None, not_scanned(check, "timed out")
+    if not r.stdout.strip():
+        if r.rc not in (0, None):
+            return None, not_scanned(check, f"no output (rc={r.rc})")
+        return {}, None
     try:
-        data = json.loads(r.stdout) if r.stdout.strip() else {}
+        data = json.loads(r.stdout)
     except json.JSONDecodeError:
         return None, not_scanned(check, f"unexpected output (rc={r.rc})")
     if not isinstance(data, dict):
@@ -90,12 +94,14 @@ def brew_vulns(ctx) -> list:
 
 @_shape_guarded("packages.osv")
 def osv(ctx) -> list:
-    out = []
+    out, errs, scanned = [], [], 0
     for root in ctx.scan_roots:
+        scanned += 1
         data, err = _json(ctx.cmd([OSV, "scan", "source", "-r", str(root), "--format", "json"], timeout=1800),
                           "packages.osv")
         if err:
-            return [err]
+            errs.append(not_scanned("packages.osv.partial", err.reason))
+            continue
         for res in _items(data.get("results")):
             src = str(_obj(res.get("source")).get("path", ""))
             for pk in _items(res.get("packages")):
@@ -117,18 +123,22 @@ def osv(ctx) -> list:
                 out.append(Finding("packages.osv", "ioc" if mal else "packages", "critical" if mal else "info", title,
                                    {"source": src, "package": name, "version": version},
                                    details={"ids": ", ".join(ids[:10]), "max_score": score}))
-    return [result("packages.osv", out)]
+    if errs and len(errs) == scanned:   # every root/target failed: the check itself is not scanned
+        return [not_scanned("packages.osv", errs[0].reason)]
+    return [result("packages.osv", out), *errs]
 
 
 @_shape_guarded("packages.grype")
 def grype(ctx) -> list:
-    out = []
+    out, errs, scanned = [], [], 0
     for target in (Path("/opt/homebrew/lib/node_modules"), ctx.home / ".npm/_npx"):
         if not target.is_dir():
             continue
+        scanned += 1
         data, err = _json(ctx.cmd([GRYPE, f"dir:{target}", "-o", "json", "--quiet"], timeout=1800), "packages.grype")
         if err:
-            return [err]
+            errs.append(not_scanned("packages.grype.partial", err.reason))
+            continue
         agg: dict = {}   # (package, version) -> [ids, fixable_high, first_location]
         for m in _items(data.get("matches")):
             v, a = _obj(m.get("vulnerability")), _obj(m.get("artifact"))
@@ -143,7 +153,9 @@ def grype(ctx) -> list:
                                f"{name} {version}: {len(ids)} vulns, {fixable} fixable high/critical",
                                {"target": str(target), "package": name, "version": version},
                                details={"ids": ", ".join(ids[:10]), "location": loc}))
-    return [result("packages.grype", out)]
+    if errs and len(errs) == scanned:   # every root/target failed: the check itself is not scanned
+        return [not_scanned("packages.grype", errs[0].reason)]
+    return [result("packages.grype", out), *errs]
 
 
 def npm_outdated(ctx):
@@ -153,7 +165,7 @@ def npm_outdated(ctx):
     out = [Finding("updates.npm", "updates", "info", f"npm -g {name} {v.get('current')} → {v.get('latest')}",
                    {"package": str(name), "latest": str(v.get("latest"))},
                    fix=(f"npm i -g {shlex.quote(str(name) + '@' + str(v.get('latest')))}",))
-           for name, v in data.items() if isinstance(v, dict)]
+           for name, v in data.items() if isinstance(v, dict) and v.get("latest")]
     return result("updates.npm", out)
 
 
@@ -161,6 +173,8 @@ def softwareupdate(ctx):
     r = ctx.cmd(["/usr/sbin/softwareupdate", "-l"], timeout=600)
     if r.missing or r.timed_out:
         return not_scanned("updates.macos", "softwareupdate -l failed or timed out")
+    if r.rc != 0:
+        return not_scanned("updates.macos", f"softwareupdate -l failed (rc={r.rc})")
     labels = re.findall(r"^\*\s*Label:\s*(.+?)\s*$", r.stdout + "\n" + r.stderr, re.M)
     return result("updates.macos", [
         Finding("updates.macos", "updates", "medium", f"macOS update available: {label}", {"label": label},
