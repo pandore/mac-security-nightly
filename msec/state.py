@@ -55,6 +55,7 @@ class Runs:
     """runs/<run-id>.json — status running|complete|failed, plus delivered_at / alerted_missing_at."""
 
     def __init__(self, state_dir: Path):
+        ensure_dir(state_dir)
         self.dir = ensure_dir(state_dir / "runs")
 
     def path(self, rid: str) -> Path:

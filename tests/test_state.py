@@ -35,6 +35,11 @@ class StateTest(unittest.TestCase):
     def test_read_missing_returns_default(self):
         self.assertEqual(state.read_json(self.dir / "nope.json", {}), {})
 
+    def test_runs_creates_private_state_root(self):
+        fresh = self.dir / "fresh"
+        state.Runs(fresh)
+        self.assertEqual(stat.S_IMODE(fresh.stat().st_mode), 0o700)
+
     def test_run_id_is_local_date(self):
         at = datetime(2026, 10, 24, 0, 30, tzinfo=TZ)
         self.assertEqual(state.run_id(at), "2026-10-24")

@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -66,6 +67,24 @@ class BaselineTest(unittest.TestCase):
                                   ([a.fingerprint], "r", 0), ([a.fingerprint], "r", 400)]:
             with self.subTest(fps=fps, reason=reason, days=days), self.assertRaises(ValueError):
                 baseline.accept(d, fps, reason, days, TODAY, known)
+
+    def test_accept_creates_missing_state_dir(self):
+        d = Path(tempfile.mkdtemp()) / "missing" / "state"
+        a = f(1)
+        known = {a.fingerprint: {"title": a.title, "severity": "high"}}
+        self.assertEqual(baseline.accept(d, [a.fingerprint], "r", 30, TODAY, known), 1)
+        self.assertTrue((d / "baseline.json").is_file())
+        self.assertTrue((d / "accept.log").is_file())
+
+    def test_failed_baseline_write_leaves_no_log(self):
+        d = Path(tempfile.mkdtemp())
+        a = f(1)
+        known = {a.fingerprint: {"title": a.title, "severity": "high"}}
+        target = d / "elsewhere.json"  # absent: read falls back to the empty default
+        os.symlink(target, d / "baseline.json")
+        with self.assertRaises(RuntimeError):
+            baseline.accept(d, [a.fingerprint], "r", 30, TODAY, known)
+        self.assertFalse((d / "accept.log").exists())
 
 
 if __name__ == "__main__":

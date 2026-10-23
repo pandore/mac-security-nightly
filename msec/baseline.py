@@ -4,7 +4,7 @@ import os
 from datetime import date, timedelta
 from pathlib import Path
 
-from .state import read_json, write_json
+from .state import ensure_dir, read_json, write_json
 
 
 def classify(findings, seen: dict, accepted: dict, today: date):
@@ -41,15 +41,18 @@ def accept(state_dir: Path, fps: list[str], reason: str, days: int, today: date,
     unknown = [fp for fp in fps if fp not in known]
     if unknown:
         raise ValueError(f"unknown fingerprints: {unknown[:3]}")
+    ensure_dir(state_dir)
     path = state_dir / "baseline.json"
     base = read_json(path, {"accepted": {}})
     until = (today + timedelta(days=days)).isoformat()
+    lines = []
+    for fp in fps:
+        base["accepted"][fp] = {"until": until, "reason": reason.strip()[:200],
+                                "title": known[fp].get("title", ""), "accepted_at": today.isoformat()}
+        lines.append(json.dumps({"fingerprint": fp, "until": until, "reason": reason.strip()[:200],
+                                 "at": today.isoformat()}, ensure_ascii=False) + "\n")
+    write_json(path, base)  # log only after the baseline took effect
     fd = os.open(state_dir / "accept.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as log:
-        for fp in fps:
-            base["accepted"][fp] = {"until": until, "reason": reason.strip()[:200],
-                                    "title": known[fp].get("title", ""), "accepted_at": today.isoformat()}
-            log.write(json.dumps({"fingerprint": fp, "until": until, "reason": reason.strip()[:200],
-                                  "at": today.isoformat()}, ensure_ascii=False) + "\n")
-    write_json(path, base)
+        log.writelines(lines)
     return len(fps)
