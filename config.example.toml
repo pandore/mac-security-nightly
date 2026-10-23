@@ -1,0 +1,14 @@
+# Copy to ~/.config/mac-security/config.toml and chmod 600.
+scan_roots = ["/Users/YOU/Repos"]
+timezone = "Europe/Lisbon"
+deliver_after = "08:30"
+
+[triage]
+enabled = true
+claude_path = "/Users/YOU/.local/bin/claude"
+auth = "subscription"          # or "api-key": --bare + Keychain item named by api_key_keychain_service
+model = "claude-sonnet-5-5"
+max_budget_usd = 0.5
+
+[delivery]
+adapters = ["macos-notify"]
