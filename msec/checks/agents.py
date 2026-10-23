@@ -15,6 +15,7 @@ SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "dist", "build", ".next", 
 OPENCLAW_SKIP = {"runtime", "backups", "cache", "npm", "logs", "media", "browser"}
 MCP_FILES = (("claude", ".claude.json"), ("cursor", ".cursor/mcp.json"),
              ("claude-desktop", "Library/Application Support/Claude/claude_desktop_config.json"))
+REPO_VOLATILE = {"worktrees", "todos", "shell-snapshots", "scratchpad", "memory", "projects", "logs", "cache"}
 LAUNCHERS = {"npx", "bunx", "pnpx", "uvx"}
 
 
@@ -40,7 +41,7 @@ def _bad(check: str, path: Path) -> Finding:
                    {"file": str(path), "unparseable": True})
 
 
-def _walk(root: Path, depth: int, skip: set[str], want, denied: list):
+def _walk(root: Path, depth: int, skip: set[str], want, denied: list, skip_pair=None):
     stack = [(root, 0)]
     while stack:
         d, level = stack.pop()
@@ -53,9 +54,9 @@ def _walk(root: Path, depth: int, skip: set[str], want, denied: list):
             continue
         for e in entries:
             if e.is_dir(follow_symlinks=False):
-                if e.name not in skip and level < depth:
+                if e.name not in skip and level < depth and not (skip_pair and skip_pair(d.name, e.name)):
                     stack.append((Path(e.path), level + 1))
-            elif e.is_file(follow_symlinks=False) and want(Path(e.path)):
+            elif e.is_file(follow_symlinks=False) and not (skip_pair and skip_pair(d.name, e.name)) and want(Path(e.path)):
                 yield Path(e.path)
 
 
@@ -198,13 +199,34 @@ def _agent_file(f: Path) -> bool:
     return ".claude" in parts or ".vscode" in parts or tuple(parts[-3:-1]) == (".github", "workflows")
 
 
+def _repo_skip(parent: str, name: str) -> bool:
+    return (parent == ".claude" and name in REPO_VOLATILE) or name.endswith(".lock")
+
+
+def _skill_dir(f: Path):
+    """<repo>/.claude/skills/<name> for a file inside a skill subdir, else None."""
+    parts = f.parts
+    for i in range(len(parts) - 4, -1, -1):
+        if parts[i] == ".claude" and parts[i + 1] == "skills":
+            return Path(*parts[:i + 3])
+    return None
+
+
 def repo_dirs(roots, denied: list) -> list[Finding]:
     out = []
+    skills: dict[Path, list] = {}
     for root in roots:
-        for f in _walk(root, 7, SKIP_DIRS, _agent_file, denied):
+        for f in _walk(root, 7, SKIP_DIRS, _agent_file, denied, _repo_skip):
+            sd = _skill_dir(f)
+            if sd:
+                skills.setdefault(sd, []).append((str(f.relative_to(sd)), _sha(f.read_bytes())))
+                continue
             high = (f.parent.name == ".claude" and f.name.startswith("settings")) or f.parent.name == "workflows"
             out.append(Finding("agents.repo", "agent-config", "high" if high else "medium",
                                f"Agent/CI file {f}", {"path": str(f), "sha256": _sha(f.read_bytes())}))
+    for sd, files in sorted(skills.items()):
+        out.append(Finding("agents.repo", "agent-config", "medium", f"Agent skill {sd}",
+                           {"path": str(sd), "sha256": _sha(json.dumps(sorted(files)).encode())}))
     return out
 
 

@@ -81,8 +81,21 @@ class AgentsTest(unittest.TestCase):
             (repo / rel).write_text("x")
         r = results(ctx)["agents.repo"]
         got = sorted((str(f.key["path"]).split("/app/")[1], f.severity) for f in r.findings)
-        self.assertEqual(got, [(".claude/settings.json", "high"), (".claude/skills/x/SKILL.md", "medium"),
+        self.assertEqual(got, [(".claude/settings.json", "high"), (".claude/skills/x", "medium"),
                                (".github/workflows/ci.yml", "high"), (".vscode/tasks.json", "medium")])
+
+    def test_repo_volatile_skipped_and_skills_aggregated(self):
+        ctx = tmp_ctx()
+        repo = ctx.scan_roots[0] / "app"
+        for rel in (".claude/worktrees/x/src/a.py", ".claude/todos/t.json", ".claude/scheduled_tasks.lock",
+                    ".claude/skills/s/SKILL.md", ".claude/skills/s/a.md", ".claude/skills/s/sub/b.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        f1 = results(ctx)["agents.repo"].findings
+        self.assertEqual([(f.key["path"].split("/app/")[1], f.severity) for f in f1], [(".claude/skills/s", "medium")])
+        (repo / ".claude/skills/s/sub/b.md").write_text("y")
+        f2 = results(ctx)["agents.repo"].findings
+        self.assertNotEqual(f1[0].fingerprint, f2[0].fingerprint)
 
     def test_shell_flags(self):
         ctx = tmp_ctx()
