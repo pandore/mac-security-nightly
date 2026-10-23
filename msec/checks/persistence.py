@@ -36,13 +36,14 @@ def signer(ctx, path: str) -> str:
     if not os.path.isabs(path):     # never hand codesign a relative path or something that looks like a flag
         return "unsigned"
     r = ctx.cmd(["/usr/bin/codesign", "-dv", "--verbose=2", path], timeout=30)
-    m = re.search(r"^TeamIdentifier=(\S+)", r.stderr, re.M)
+    err = r.stderr
+    if re.search(r"^Signature=adhoc\s*$", err, re.M):
+        return "adhoc"
+    if re.search(r"^Authority=.*Software Signing\s*$", err, re.M):
+        return "apple"
+    m = re.search(r"^TeamIdentifier=(.+?)\s*$", err, re.M)
     if m and m.group(1) != "not set":
         return m.group(1)
-    if "Authority=Software Signing" in r.stderr:
-        return "apple"
-    if "Signature=adhoc" in r.stderr:
-        return "adhoc"
     return "unsigned"
 
 
@@ -127,11 +128,21 @@ def parse_btm(text: str, uid: int) -> list[dict]:
 
 
 def scan_btm(ctx):
-    r = ctx.cmd(["/usr/bin/sfltool", "dumpbtm"], timeout=300)
-    if r.missing or r.timed_out or r.rc != 0:
-        return not_scanned("persistence.btm", "sfltool dumpbtm failed or timed out")
-    if not re.search(rf"Records for UID {ctx.uid}\b", r.stdout):
-        return not_scanned("persistence.btm", "sfltool output had no records section for this user")
+    uid_re = rf"Records for UID {ctx.uid}\b"
+    for _ in range(2):      # sfltool occasionally fails transiently in the nightly: retry once
+        r = ctx.cmd(["/usr/bin/sfltool", "dumpbtm"], timeout=300)
+        if not (r.missing or r.timed_out or r.rc != 0) and re.search(uid_re, r.stdout):
+            break
+    else:
+        if r.timed_out:
+            why = "timed out twice"
+        elif r.missing:
+            why = "missing"
+        elif r.rc != 0:
+            why = f"failed twice (rc={r.rc})"
+        else:
+            return not_scanned("persistence.btm", "sfltool output had no records section for this user")
+        return not_scanned("persistence.btm", f"sfltool dumpbtm {why}")
     out = []
     for rec in parse_btm(r.stdout, ctx.uid):
         typ = rec.get("Type", "")

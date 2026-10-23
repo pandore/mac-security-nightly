@@ -69,6 +69,34 @@ def by_check(results, name):
     return next(r for r in results if r.check == name)
 
 
+def sig(stderr):
+    return tmp_ctx({"/usr/bin/codesign": (0, "", stderr)})
+
+
+class SignerTest(unittest.TestCase):
+    def test_not_set_is_unsigned_and_critical(self):
+        ctx = sig("TeamIdentifier=not set\n")
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "unsigned")
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "critical")
+
+    def test_adhoc_is_critical(self):
+        ctx = sig("Signature=adhoc\nTeamIdentifier=not set\n")
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "adhoc")
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "critical")
+
+    def test_apple_platform_binary(self):
+        ctx = sig("Authority=macOS Software Signing\nAuthority=Apple Root CA\nTeamIdentifier=not set\n")
+        self.assertEqual(persistence.signer(ctx, "/usr/bin/python3"), "apple")
+
+    def test_developer_id_team_is_medium(self):
+        ctx = sig("Authority=Developer ID Application: X (ABCDE12345)\nTeamIdentifier=ABCDE12345\n")
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "ABCDE12345")
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "medium")
+
+
 class PersistenceTest(unittest.TestCase):
     def test_script_launch_agent_is_critical(self):
         ctx = tmp_ctx({"/usr/bin/codesign": SIGNED, "/usr/bin/sfltool": (0, "", ""), "/usr/bin/crontab": (1, "", "crontab: no crontab for u\n")})
@@ -196,6 +224,18 @@ class PersistenceTest(unittest.TestCase):
         ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
         write_plist(ctx, "a.plist", ["/opt/x", "--flag"])
         self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "medium")
+
+    def test_btm_retries_once_after_transient_failure(self):
+        ctx = tmp_ctx({"/usr/bin/sfltool": ["timeout", (0, BTM, "")]})
+        r = by_check(persistence.run(ctx), "persistence.btm")
+        self.assertEqual(r.status, "findings")
+        self.assertTrue(r.findings)
+
+    def test_btm_failing_twice_reports_reason(self):
+        r = by_check(persistence.run(tmp_ctx({"/usr/bin/sfltool": ["timeout"]})), "persistence.btm")
+        self.assertEqual((r.status, r.reason), ("not_scanned", "sfltool dumpbtm timed out twice"))
+        r = by_check(persistence.run(tmp_ctx({"/usr/bin/sfltool": [(1, "", ""), (2, "", "")]})), "persistence.btm")
+        self.assertEqual(r.reason, "sfltool dumpbtm failed twice (rc=2)")
 
     def test_btm_without_our_section_is_not_scanned(self):
         ctx = tmp_ctx({"/usr/bin/sfltool": (0, "", "")})

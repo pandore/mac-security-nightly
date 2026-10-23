@@ -15,7 +15,10 @@ class FakeCtx(Ctx):
     def cmd(self, argv, timeout=120, stdin_text=None, real_home=False):
         argv = tuple(str(a) for a in argv)
         self.calls.append((argv, real_home))
-        resp = self.responses.get(argv, self.responses.get(argv[0], "missing"))
+        key = argv if argv in self.responses else argv[0]
+        resp = self.responses.get(key, "missing")
+        if isinstance(resp, list):      # sequence: consumed in order, last one repeats
+            resp = resp.pop(0) if len(resp) > 1 else resp[0]
         if resp == "missing":
             return CmdResult(argv, None, "", "", missing=True)
         if resp == "timeout":
