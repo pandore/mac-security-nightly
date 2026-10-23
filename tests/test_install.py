@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import plistlib
 import tempfile
@@ -30,7 +32,9 @@ class InstallTest(unittest.TestCase):
     def test_dry_run_writes_nothing(self):
         d = Path(tempfile.mkdtemp())
         cfg = Config((d,), "Europe/Lisbon", "08:30", Triage(enabled=False), ("macos-notify",), d / "state")
-        self.assertEqual(install.install(cfg, entry=d / "bin/msec", launch_agents=d / "LA", uid=501, dry_run=True), 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = install.install(cfg, entry=d / "bin/msec", launch_agents=d / "LA", uid=501, dry_run=True)
+        self.assertEqual(rc, 0)
         self.assertFalse((d / "LA").exists())
 
 
@@ -52,7 +56,8 @@ class InstallWriteTest(unittest.TestCase):
         la = d / "LA"
         la.mkdir()
         os.chmod(la, 0o755)
-        with mock.patch("msec.install.run", side_effect=_ok), mock.patch("msec.install.time.sleep"):
+        with mock.patch("msec.install.run", side_effect=_ok), mock.patch("msec.install.time.sleep"), \
+                contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(install.install(_cfg(d), entry=d / "bin/msec", launch_agents=la, uid=501), 0)
         for label in install.LABELS:
             p = la / f"{label}.plist"
@@ -66,7 +71,8 @@ class InstallWriteTest(unittest.TestCase):
         real.mkdir()
         link = d / "LA"
         link.symlink_to(real, target_is_directory=True)
-        with mock.patch("msec.install.run", side_effect=_ok) as run, mock.patch("msec.install.time.sleep"):
+        with mock.patch("msec.install.run", side_effect=_ok) as run, mock.patch("msec.install.time.sleep"), \
+                contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(install.install(_cfg(d), entry=d / "bin/msec", launch_agents=link, uid=501), 1)
         self.assertEqual(list(real.iterdir()), [])
         run.assert_not_called()
@@ -77,7 +83,7 @@ class InstallBootstrapTest(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         la = d / "LA"
         with mock.patch("msec.install.run", side_effect=fake) as run, \
-                mock.patch("msec.install.time.sleep") as sleep:
+                mock.patch("msec.install.time.sleep") as sleep, contextlib.redirect_stdout(io.StringIO()):
             rc = install.install(_cfg(d), entry=d / "bin/msec", launch_agents=la, uid=501)
         return rc, run, sleep
 
