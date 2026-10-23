@@ -37,6 +37,20 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(set(deliver.ADAPTERS), set(config.ADAPTERS))
 
 
+    def test_running_without_valid_start_is_missing_not_crash(self):
+        for rs in ({"status": "running"},
+                   {"status": "running", "started_at": "2026-10-24T04:00:00"},
+                   {"status": "running", "started_at": "garbage"}):
+            with self.subTest(rs=rs):
+                self.assertEqual(deliver.decide(rs, at(8, 31), "08:30"), "missing")
+
+    def test_non_dict_state_behaves_like_none(self):
+        self.assertEqual(deliver.decide([], at(8, 40), "08:30"), "wait")
+        self.assertEqual(deliver.decide([], at(10, 31), "08:30"), "missing")
+
+    def test_complete_after_missing_alert_is_sent(self):
+        self.assertEqual(deliver.decide({"status": "complete", "alerted_missing_at": "x"}, at(11, 40), "08:30"), "send")
+
 class DeliverTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -94,6 +108,29 @@ class DeliverTest(unittest.TestCase):
         state.write_json(self.dir / "reports/2026-10-24/summary.json", [{"counts": 1}])
         runs.finish("2026-10-24", at(4, 10), "complete")
         self.assertEqual(deliver.deliver(self.cfg, now=at(8, 31), adapters=self.adapters), 0)
+        self.assertEqual(self.sent, [deliver.MISSING_TEXT])
+
+
+    def test_late_completion_after_missing_alert_sends_real_message(self):
+        deliver.deliver(self.cfg, now=at(11, 0), adapters=self.adapters)
+        self.assertEqual(self.sent, [deliver.MISSING_TEXT])
+        runs = state.Runs(self.dir)
+        runs.start("2026-10-24", at(11, 5))
+        state.write_json(self.dir / "reports/2026-10-24/summary.json",
+                         summary.build("2026-10-24", [Finding("c", "ioc", "critical", "t", {})], [], []))
+        runs.finish("2026-10-24", at(11, 30), "complete")
+        self.assertEqual(deliver.deliver(self.cfg, now=at(11, 40), adapters=self.adapters), 0)
+        self.assertIn("🔴1", self.sent[-1])
+        deliver.deliver(self.cfg, now=at(12, 0), adapters=self.adapters)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_tampered_complete_summary_alerts_once_not_forever(self):
+        runs = state.Runs(self.dir)
+        runs.start("2026-10-24", at(4, 0))
+        state.write_json(self.dir / "reports/2026-10-24/summary.json", [1])
+        runs.finish("2026-10-24", at(4, 10), "complete")
+        deliver.deliver(self.cfg, now=at(8, 31), adapters=self.adapters)
+        deliver.deliver(self.cfg, now=at(11, 0), adapters=self.adapters)
         self.assertEqual(self.sent, [deliver.MISSING_TEXT])
 
 

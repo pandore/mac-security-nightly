@@ -18,20 +18,35 @@ def notify_macos(text: str) -> bool:
 ADAPTERS = {"macos-notify": notify_macos}
 
 
-def decide(run_state: dict | None, now: datetime, deliver_after: str) -> str:
+def _aware(value) -> datetime | None:
+    """Parse an aware ISO timestamp, or None. Never raises."""
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.utcoffset() is not None else None
+
+
+def decide(run_state, now: datetime, deliver_after: str) -> str:
     hh, mm = map(int, deliver_after.split(":"))
     after = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     if now < after:
         return "wait"
+    if not isinstance(run_state, dict):
+        run_state = None
     if run_state is None:
         return "missing" if now >= after + GRACE else "wait"
-    if run_state.get("delivered_at") or run_state.get("alerted_missing_at"):
+    if run_state.get("delivered_at"):
         return "done"
     status = run_state.get("status")
     if status == "complete":
-        return "send"
+        return "send"              # a late completion beats an earlier "missing" alert
+    if run_state.get("alerted_missing_at"):
+        return "done"
     if status == "running":
-        started = datetime.fromisoformat(run_state["started_at"])
+        started = _aware(run_state.get("started_at"))
+        if started is None:
+            return "missing"
         return "missing" if now - started > STALE_RUNNING else "wait"
     return "missing"
 
@@ -46,11 +61,11 @@ def deliver(cfg, now: datetime | None = None, adapters: dict | None = None) -> i
         return 0
     field, text = "alerted_missing_at", MISSING_TEXT
     if action == "send":
+        field = "delivered_at"     # also after a tampered summary, so it is not retried forever
         try:
             text = summary.message(state.read_json(cfg.state_dir / "reports" / rid / "summary.json") or {})
-            field = "delivered_at"
-        except ValueError:
-            text = MISSING_TEXT       # unreadable or tampered summary: alert instead of sending its content
+        except (ValueError, OSError):
+            text = MISSING_TEXT    # unreadable or tampered summary: alert instead of sending its content
     ok = True
     if text:
         for name in cfg.adapters:
