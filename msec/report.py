@@ -12,6 +12,13 @@ def _md(s: str) -> str:
     return str(s).replace("`", "'").replace("|", "/")
 
 
+def _fix_line(cmd: str) -> str:
+    # shlex.quote keeps the shell safe but not the markdown: a newline in a path would forge a line
+    if cmd.isprintable() and "`" not in cmd:
+        return f"- Виправлення: `{cmd}`"
+    return "- Виправлення: (команду не показано: керівні символи в шляху, див. findings.json)"
+
+
 def _info_line(items) -> list:
     c = Counter(f.check for f in items if f.severity == "info")
     if not c:
@@ -36,7 +43,7 @@ def render(run_id, new, open_items, accepted, resolved, results, triage, triage_
             t = tri.get(f.fingerprint)
             if t:
                 lines.append(f"- Модель: {_md(t['explanation'])}{' (ймовірно безпечно)' if t['likely_benign'] else ''}")
-            lines.extend(f"- Виправлення: `{cmd}`" for cmd in f.fix)
+            lines.extend(_fix_line(cmd) for cmd in f.fix)
             lines.append("")
         lines.extend(_info_line(items))
 
