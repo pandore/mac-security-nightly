@@ -63,13 +63,26 @@ class PackagesTest(unittest.TestCase):
 
     def test_osv_malicious_is_critical_ioc(self):
         r = by(packages.run(self.ctx(**{"/opt/homebrew/bin/osv-scanner": ok(OSV, rc=1)})), "packages.osv")
-        got = sorted((f.key["id"], f.severity, f.category) for f in r.findings)
-        self.assertEqual(got, [("CVE-9", "high", "packages"), ("GHSA-b", "info", "packages"),
-                               ("MAL-2026-1", "critical", "ioc")])
+        got = sorted((f.key["package"], f.severity, f.category) for f in r.findings)
+        self.assertEqual(got, [("npm/keyv", "critical", "ioc"), ("npm/lodash", "info", "packages")])
+        lodash = next(f for f in r.findings if f.key["package"] == "npm/lodash")
+        self.assertEqual(lodash.details["max_score"], 7.4)
+        self.assertEqual(len(lodash.details["ids"].split(", ")), 3)
+        self.assertIn("3 advisories (max CVSS 7.4)", lodash.title)
+        mal = next(f for f in r.findings if f.key["package"] == "npm/keyv")
+        self.assertIn("MALICIOUS MAL-2026-1", mal.title)
 
     def test_grype_fixed_high_vs_unfixed(self):
         r = by(packages.run(self.ctx(**{"/opt/homebrew/bin/grype": ok(GRYPE)})), "packages.grype")
-        self.assertEqual(sorted({(f.key["id"], f.severity) for f in r.findings}), [("CVE-5", "high"), ("CVE-6", "info")])
+        self.assertEqual(sorted({(f.key["package"], f.severity) for f in r.findings}), [("undici", "high"), ("x", "info")])
+        self.assertEqual(len({tuple(sorted(f.key.items())) for f in r.findings}), len(r.findings))  # per-target keys
+
+    def test_grype_aggregates_same_package(self):
+        m = lambda i, sev, st: {"vulnerability": {"id": i, "severity": sev, "fix": {"state": st}},
+                                "artifact": {"name": "p", "version": "1", "locations": [{"path": "/n/p"}]}}
+        g = {"matches": [m("CVE-1", "High", "fixed"), m("CVE-2", "Low", "fixed"), m("CVE-3", "Critical", "not-fixed")]}
+        fs = by(packages.run(self.ctx(**{"/opt/homebrew/bin/grype": ok(g)})), "packages.grype").findings
+        self.assertEqual({(f.title, f.severity) for f in fs}, {("p 1: 3 vulns, 1 fixable high/critical", "high")})
 
     def test_npm_outdated_exit_1_is_normal(self):
         r = by(packages.run(self.ctx(**{"/opt/homebrew/bin/npm": ok(NPM, rc=1)})), "updates.npm")

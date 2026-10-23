@@ -100,25 +100,23 @@ def osv(ctx) -> list:
             src = str(_obj(res.get("source")).get("path", ""))
             for pk in _items(res.get("packages")):
                 pkg = _obj(pk.get("package"))
-                name = f"{pkg.get('ecosystem')}/{pkg.get('name')}"
+                name, version = f"{pkg.get('ecosystem')}/{pkg.get('name')}", str(pkg.get("version"))
+                ids, score = set(), 0.0
                 for g in _items(pk.get("groups")):
-                    ids = sorted(str(i) for i in g.get("ids") or [] if i)
-                    if not ids:
-                        continue
-                    if any(i.startswith("MAL-") for i in ids):
-                        sev, cat = "critical", "ioc"
-                    else:
-                        try:
-                            score = float(g.get("max_severity") or 0)
-                        except ValueError:
-                            score = 0.0
-                        sev, cat = ("high" if score >= 7.0 else "info"), "packages"
-                    primary = next((i for i in ids if i.startswith("MAL-")), ids[0]) if sev == "critical" \
-                        else next((i for i in ids if i.startswith("CVE-")), ids[0])
-                    out.append(Finding("packages.osv", cat, sev,
-                                       f"{name} {pkg.get('version')}: {', '.join(ids[:3])} in {src}",
-                                       {"source": src, "package": name, "version": str(pkg.get("version")),
-                                        "id": primary}))
+                    ids.update(str(i) for i in g.get("ids") or [] if i)
+                    try:
+                        score = max(score, float(g.get("max_severity") or 0))
+                    except ValueError:
+                        pass
+                if not ids:
+                    continue
+                ids = sorted(ids)
+                mal = next((i for i in ids if i.startswith("MAL-")), None)
+                title = (f"{name} {version}: MALICIOUS {mal} in {src}" if mal else
+                         f"{name} {version}: {len(ids)} advisories (max CVSS {score:.1f}) in {src}")
+                out.append(Finding("packages.osv", "ioc" if mal else "packages", "critical" if mal else "info", title,
+                                   {"source": src, "package": name, "version": version},
+                                   details={"ids": ", ".join(ids[:10]), "max_score": score}))
     return [result("packages.osv", out)]
 
 
@@ -131,17 +129,20 @@ def grype(ctx) -> list:
         data, err = _json(ctx.cmd([GRYPE, f"dir:{target}", "-o", "json", "--quiet"], timeout=1800), "packages.grype")
         if err:
             return [err]
+        agg: dict = {}   # (package, version) -> [ids, fixable_high, first_location]
         for m in _items(data.get("matches")):
             v, a = _obj(m.get("vulnerability")), _obj(m.get("artifact"))
-            raw = str(v.get("severity", "")).lower()
-            fixed = _obj(v.get("fix")).get("state") == "fixed"
             locs = _items(a.get("locations"))
-            loc = locs[0].get("path", "") if locs else ""
-            out.append(Finding("packages.grype", "packages", "high" if fixed and raw in ("high", "critical") else "info",
-                               f"{a.get('name')} {a.get('version')}: {v.get('id')} {raw}{' (fix available)' if fixed else ''}",
-                               {"target": str(target), "package": str(a.get("name")),
-                                "version": str(a.get("version")), "id": str(v.get("id"))},
-                               details={"location": str(loc)}))
+            e = agg.setdefault((str(a.get("name")), str(a.get("version"))),
+                               [[], 0, str(locs[0].get("path", "")) if locs else ""])
+            e[0].append(str(v.get("id")))
+            if _obj(v.get("fix")).get("state") == "fixed" and str(v.get("severity", "")).lower() in ("high", "critical"):
+                e[1] += 1
+        for (name, version), (ids, fixable, loc) in agg.items():
+            out.append(Finding("packages.grype", "packages", "high" if fixable else "info",
+                               f"{name} {version}: {len(ids)} vulns, {fixable} fixable high/critical",
+                               {"target": str(target), "package": name, "version": version},
+                               details={"ids": ", ".join(ids[:10]), "location": loc}))
     return [result("packages.grype", out)]
 
 
