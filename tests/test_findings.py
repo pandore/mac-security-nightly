@@ -55,6 +55,20 @@ class FindingTest(unittest.TestCase):
         self.assertIn("https://mcp.tavily.com/mcp/?…", clean("x https://me:pw@mcp.tavily.com/mcp/?k=v y"))
         self.assertIn("ghp_…", clean("ghp_" + "a1" * 18))
 
+    def test_clean_masks_keyword_values_and_auth_headers(self):
+        cases = [("API_KEY=abc123def456", "abc123def456", "API_KEY"),
+                 ("export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI", "SECRET_ACCESS_KEY"),
+                 ("curl -H 'Authorization: Basic dXNlcjpwYXNz'", "dXNlcjpwYXNz", "Authorization"),
+                 ("curl -H 'Authorization: Bearer abcDEF123+/xyz='", "abcDEF123", "Bearer"),
+                 ("token: s3cr3t", "s3cr3t", "token")]
+        for text, secret, kw in cases:
+            with self.subTest(text=text):
+                out = clean(text)
+                self.assertNotIn(secret, out)
+                self.assertIn(kw, out)
+        self.assertEqual(clean("/Users/x/Library/Application Support/a.json 0123456789abcdef"),
+                         "/Users/x/Library/Application Support/a.json 0123456789abcdef")
+
     def test_clean_keeps_ordinary_text(self):
         for text in ("0123456789abcdef", "/Users/u/Repos/app/.claude/settings.json", "mac-security-nightly-tool",
                      "ffmpeg 9.0.2: CVE-2026-12345 HIGH — bad", "launchd com.task-runner.agent → /opt/x [ABCDE12345]",

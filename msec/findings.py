@@ -10,6 +10,8 @@ STATUSES = ("ok", "findings", "not_scanned")
 
 URL = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,30}://)(?:[^\s/?#]*@)?([^\s?#]*)([?#]\S*)?")
 TOKEN = re.compile(r"\b(sk-ant-|sk-|ghp_|gho_|ghs_|github_pat_|xox[abpr]-|tvly-|AKIA|AIza|glpat-|pplx-)[A-Za-z0-9_-]{6,}")
+KEYWORD = re.compile(r"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|pass|auth(?:orization)?|client[_-]?secret|access[_-]?key)\s*[=:]\s*(?:(?:basic|bearer)\s+)?)[^\s'\"]+")
+SCHEME = re.compile(r"(?i)\b((?:basic|bearer)\s+)[A-Za-z0-9+/=._-]{8,}")
 LONG_RUN = re.compile(r"[A-Za-z0-9_-]{20,}")
 
 
@@ -22,6 +24,8 @@ def mask(s: str) -> str:
     """Drop URL userinfo/query/fragment and token-looking runs. Titles go to the model and state files."""
     s = URL.sub(lambda m: m.group(1) + m.group(2) + ("?…" if m.group(3) else ""), s)
     s = TOKEN.sub(lambda m: m.group(1) + "…", s)
+    s = KEYWORD.sub(lambda m: m.group(1) + "…", s)
+    s = SCHEME.sub(lambda m: m.group(1) + "…", s)
     return LONG_RUN.sub(_long_run, s)
 
 

@@ -55,7 +55,7 @@ class BaselineTest(unittest.TestCase):
 
     def test_update_seen_carries_items_of_skipped_checks(self):
         seen = {"osv0": {"source": "packages.osv", "last_seen": "2026-10-23"},
-                "brew": {"source": "packages.brew"}, "repo": {"source": "agents.repo"}, "old": {}}
+                "brew": {"source": "packages.brew"}, "repo": {"source": "agents.repo", "last_seen": "2026-10-23"}, "old": {}}
         a = f(1)
         out = baseline.update_seen(seen, [a], TODAY, {a.fingerprint: "c"}, ["packages.osv.partial", "agents"])
         self.assertEqual(out["osv0"], seen["osv0"])          # partial scan: kept untouched
@@ -63,6 +63,34 @@ class BaselineTest(unittest.TestCase):
         self.assertNotIn("brew", out)
         self.assertNotIn("old", out)
         self.assertEqual(out[a.fingerprint]["source"], "c")
+
+    def test_partial_covers_only_its_own_source_and_only_for_three_days(self):
+        x = f(1)
+        sk = ["agents.partial"]
+        seen = {x.fingerprint: {"source": "agents", "last_seen": "2026-10-20"},
+                "sub": {"source": "agents.repo", "last_seen": "2026-10-23"}}
+        out = baseline.update_seen(seen, [], date(2026, 10, 23), None, sk)    # night 2: absent, in window
+        self.assertIn(x.fingerprint, out)
+        self.assertNotIn("sub", out)                                          # .partial does not cover agents.*
+        out = baseline.update_seen(out, [], date(2026, 10, 24), None, sk)     # 4 days since last_seen
+        self.assertNotIn(x.fingerprint, out)
+        new, _, _, _ = baseline.classify([x], out, {}, date(2026, 10, 29))    # re-added later: new
+        self.assertEqual(new, [x])
+
+    def test_launchd_item_removed_under_partial_resolves_after_window(self):
+        seen = {"p": {"source": "persistence.launchd", "last_seen": "2026-10-20"}}
+        sk = ["persistence.launchd.partial"]
+        self.assertIn("p", baseline.update_seen(seen, [], date(2026, 10, 23), None, sk))
+        self.assertNotIn("p", baseline.update_seen(seen, [], date(2026, 10, 24), None, sk))
+
+    def test_fully_skipped_check_recovering_keeps_items_open(self):
+        x = f(1)
+        seen = {x.fingerprint: {"source": "c", "last_seen": "2026-10-22"}}
+        for d in (23, 24):                         # two nights not scanned
+            seen = baseline.update_seen(seen, [], date(2026, 10, d), None, ["c"])
+        self.assertIn(x.fingerprint, seen)
+        new, open_items, _, _ = baseline.classify([x], seen, {}, date(2026, 10, 25))
+        self.assertEqual((new, open_items), ([], [x]))
 
     def test_critical_stays_open_until_accepted(self):
         x = f(1, "critical")

@@ -23,8 +23,13 @@ def classify(findings, seen: dict, accepted: dict, today: date):
     return new, open_items, acc, sorted(set(seen) - current)
 
 
-def _covered(source: str, skipped: set[str]) -> bool:
-    return any(source == s or source.startswith(s + ".") for s in skipped)
+CARRY_OVER_DAYS = 3
+
+
+def _covered(source: str, skipped) -> bool:
+    # a ".partial" gap covers only its own base source; a fully skipped check also covers its "<check>.*" sub-sources
+    return any(source == s.removesuffix(".partial") or (not s.endswith(".partial") and source.startswith(s + "."))
+               for s in skipped)
 
 
 def update_seen(seen: dict, findings, today: date, sources: dict | None = None, skipped=()) -> dict:
@@ -38,9 +43,9 @@ def update_seen(seen: dict, findings, today: date, sources: dict | None = None, 
         out[f.fingerprint] = {"first_seen": prev.get("first_seen", today.isoformat()),
                               "last_seen": today.isoformat(), "severity": f.severity, "title": f.title,
                               "source": sources.get(f.fingerprint, "")}
-    gaps = {s.removesuffix(".partial") for s in skipped}
+    cutoff = (today - timedelta(days=CARRY_OVER_DAYS)).isoformat()
     for fp, prev in seen.items():
-        if fp not in out and _covered(str(prev.get("source", "")), gaps):
+        if fp not in out and prev.get("last_seen", "") >= cutoff and _covered(str(prev.get("source", "")), skipped):
             out[fp] = prev
     return out
 
