@@ -86,7 +86,7 @@ def _claude_file(p: Path, data: dict) -> list[Finding]:
         rule = str(rule)
         out.append(Finding("agents.claude.allow", "agent-permissions",
                            "high" if rule.strip() in DANGEROUS_RULES else "medium",
-                           f"Claude allow rule {rule} in {p}", {"file": str(p), "rule": rule}))
+                           f"Claude allow rule {rule} in {p}", {"file": str(p), "rule": _sha(rule.encode())}))
     mode = perms.get("defaultMode")
     if mode:
         out.append(Finding("agents.claude.mode", "agent-permissions",

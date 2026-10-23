@@ -9,7 +9,7 @@ from .config import Triage
 from .findings import SEVERITIES, Finding, clean
 from .runner import SAFE_PATH, run
 
-MAX_ITEMS = 200
+MAX_ITEMS = 50
 FP = re.compile(r"[0-9a-f]{16}")
 SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["overview", "items"],

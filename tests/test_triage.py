@@ -42,8 +42,17 @@ class TriageTest(unittest.TestCase):
         items = [f(i, "info") for i in range(250)] + [f(999, "critical")]
         data = json.loads(triage.build_input(items))
         self.assertEqual(len(data["findings"]), triage.MAX_ITEMS)
-        self.assertEqual(data["truncated"], 51)
+        self.assertEqual(data["truncated"], len(items) - triage.MAX_ITEMS)
+        self.assertEqual(triage.SCHEMA["properties"]["items"]["maxItems"], 50)
         self.assertEqual(data["findings"][0]["severity"], "critical")
+
+    def test_input_carries_no_secrets(self):
+        x = f(1, title="MCP server tav: https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-SECRETSECRET123 "
+                       "Bash(GITHUB_TOKEN=ghp_abcdef1234567890abcdef1234567890abcd gh api:*)")
+        x = Finding("c", "agent-config", "high", x.title, {}, details={"cmd": "curl -H 'Bearer sk-ant-api03-SECRET99zz'"})
+        text = triage.build_input([x])
+        for secret in ("SECRETSECRET123", "abcdef1234567890", "SECRET99zz"):
+            self.assertNotIn(secret, text)
 
     def test_input_drops_non_scalar_details(self):
         x = Finding("c", "ioc", "info", "t", {}, details={"a": "x" * 500, "b": {"nested": 1}, "c": 3})
