@@ -85,6 +85,20 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("report.md", buf.getvalue())
 
+    def test_main_scan_bad_out_is_a_message_not_a_traceback(self):
+        locked = self.tmp / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            with mock.patch.object(cli, "CHECKS", (roots_check,)), mock.patch.object(cli, "SCAN_CACHE", self.cache), \
+                 redirect_stdout(io.StringIO()), mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                rc = cli.main(["scan", "--root", str(self.root), "--out", str(locked)])
+                rc2 = cli.main(["scan", "--out", str(self.tmp / "missing")])
+        finally:
+            locked.chmod(0o700)
+        self.assertEqual((rc, rc2), (1, 2))
+        self.assertIn("msec scan:", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

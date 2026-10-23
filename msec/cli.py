@@ -118,11 +118,15 @@ def cmd_scan(args) -> int:
     if args.triage:
         claude = args.claude or shutil.which("claude") or str(Path.home() / ".local/bin/claude")
         tri_cfg = Triage(claude_path=str(Path(claude).expanduser()))
-    out_parent = Path(args.out).expanduser() if args.out else None
+    out_parent = Path(args.out).expanduser().resolve() if args.out else None
     if out_parent and not out_parent.is_dir():
         print(f"msec scan: --out must be an existing folder: {out_parent}", file=sys.stderr)
         return 2
-    scan(roots, CHECKS, tri_cfg, out_parent)
+    try:
+        scan(roots, CHECKS, tri_cfg, out_parent)
+    except OSError as e:
+        print(f"msec scan: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

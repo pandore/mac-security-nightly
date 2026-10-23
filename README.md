@@ -71,11 +71,11 @@ No config, no schedule, no baseline, no notification — just a report of what i
 ```sh
 git clone https://github.com/pandore/mac-security-nightly.git && cd mac-security-nightly
 brew bundle --file=Brewfile          # osv-scanner + grype
-bin/msec scan                        # scans ~/Repos if it exists; 3–5 minutes
+bin/msec scan                        # scans ~/Repos if it exists; a few minutes
 bin/msec scan --root ~/code --root ~/work --triage   # your repo folders; --triage adds Claude's explanations
 ```
 
-It prints the counts and the path to `report.md` (a fresh private folder in your temp dir, or inside `--out DIR`). Everything is shown as new, because there is no baseline yet — expect thousands of items on a busy dev machine, mostly inventory. Read the 🔴 first. Nothing is written to `~/.local/state/mac-security` and nothing is installed; scanner caches are reused from `~/Library/Caches/msec`.
+It prints the counts and the path to `report.md` (a fresh private folder in your temp dir, or inside `--out DIR`). Everything is shown as new, because there is no baseline yet — expect thousands of items on a busy dev machine, mostly inventory. Read the 🔴 first. Nothing is written to `~/.local/state/mac-security` and nothing is installed; scanner caches are reused from `~/Library/Caches/msec`. Without `--triage` nothing goes to Anthropic; with it, the redacted findings JSON does (see the table below).
 
 ## Install
 
