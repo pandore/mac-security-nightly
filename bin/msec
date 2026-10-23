@@ -1,0 +1,9 @@
+#!/opt/homebrew/bin/python3 -I
+"""Entry point. -I ignores PYTHONPATH, user site-packages and the current directory."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from msec.cli import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

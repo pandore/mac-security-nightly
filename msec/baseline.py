@@ -44,10 +44,11 @@ def accept(state_dir: Path, fps: list[str], reason: str, days: int, today: date,
     ensure_dir(state_dir)
     path = state_dir / "baseline.json"
     base = read_json(path, {"accepted": {}})
+    acc = base.setdefault("accepted", {})
     until = (today + timedelta(days=days)).isoformat()
     lines = []
     for fp in fps:
-        base["accepted"][fp] = {"until": until, "reason": reason.strip()[:200],
+        acc[fp] = {"until": until, "reason": reason.strip()[:200],
                                 "title": known[fp].get("title", ""), "accepted_at": today.isoformat()}
         lines.append(json.dumps({"fingerprint": fp, "until": until, "reason": reason.strip()[:200],
                                  "at": today.isoformat()}, ensure_ascii=False) + "\n")
