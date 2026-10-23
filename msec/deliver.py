@@ -1,4 +1,5 @@
 """Deliver at most once per run, never before deliver_after. Adapters receive only template text."""
+import time
 from datetime import datetime, timedelta
 
 from . import state, summary
@@ -6,6 +7,7 @@ from .runner import SAFE_PATH, run
 
 GRACE = timedelta(hours=2)
 STALE_RUNNING = timedelta(hours=3)
+WAKE_WAIT = 120   # seconds
 MISSING_TEXT = "⚠ Нічна перевірка мака не відпрацювала. Деталі: msec status"
 
 
@@ -51,25 +53,30 @@ def decide(run_state, now: datetime, deliver_after: str) -> str:
     return "missing"
 
 
-def deliver(cfg, now: datetime | None = None, adapters: dict | None = None) -> int:
+def deliver(cfg, now: datetime | None = None, adapters: dict | None = None, sleep=time.sleep) -> int:
     adapters = adapters or ADAPTERS
     now = now or state.now(cfg.timezone)
     rid = state.run_id(now)
     runs = state.Runs(cfg.state_dir)
-    action = decide(runs.get(rid), now, cfg.deliver_after)
-    if action in ("wait", "done"):
-        return 0
-    field, text = "alerted_missing_at", MISSING_TEXT
-    if action == "send":
-        field = "delivered_at"     # also after a tampered summary, so it is not retried forever
-        try:
-            text = summary.message(state.read_json(cfg.state_dir / "reports" / rid / "summary.json") or {})
-        except (ValueError, OSError):
-            text = MISSING_TEXT    # unreadable or tampered summary: alert instead of sending its content
-    ok = True
-    if text:
-        for name in cfg.adapters:
-            ok = adapters[name](text) and ok
-    if ok:
-        runs.mark(rid, field, now)
-    return 0 if ok else 1
+    with state.locked(cfg.state_dir / "deliver.lock"):     # decide -> send -> mark happens once
+        rs = runs.get(rid)
+        action = decide(rs, now, cfg.deliver_after)
+        if action == "missing" and rs is None:
+            sleep(WAKE_WAIT)   # on a late wake launchd fires nightly and deliver together; let nightly start
+            action = decide(runs.get(rid), now, cfg.deliver_after)
+        if action in ("wait", "done"):
+            return 0
+        field, text = "alerted_missing_at", MISSING_TEXT
+        if action == "send":
+            field = "delivered_at"     # also after a tampered summary, so it is not retried forever
+            try:
+                text = summary.message(state.read_json(cfg.state_dir / "reports" / rid / "summary.json") or {})
+            except (ValueError, OSError):
+                text = MISSING_TEXT    # unreadable or tampered summary: alert instead of sending its content
+        ok = True
+        if text:
+            for name in cfg.adapters:
+                ok = adapters[name](text) and ok
+        if ok:
+            runs.mark(rid, field, now)
+        return 0 if ok else 1
