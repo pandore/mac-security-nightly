@@ -1,7 +1,9 @@
 """Atomic, symlink-refusing writes under the state dir, and per-day run state."""
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,6 +43,22 @@ def read_json(path: Path, default=None):
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return default
+
+
+@contextmanager
+def locked(path: Path, blocking: bool = True):
+    """Exclusive flock on a 0600 lock file; yields False when non-blocking and already held."""
+    ensure_dir(path.parent)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
 
 
 def now(tz: str) -> datetime:

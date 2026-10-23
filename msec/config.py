@@ -48,8 +48,9 @@ def _triage(t: dict) -> Triage:
         raise ConfigError("triage.enabled: must be true or false")
     if tri.auth not in AUTH_MODES:
         raise ConfigError(f"triage.auth: one of {sorted(AUTH_MODES)}")
-    if tri.enabled and not (Path(tri.claude_path).is_absolute() and Path(tri.claude_path).exists()):
-        raise ConfigError("triage.claude_path: absolute path to an existing claude binary")
+    # existence is checked at run time (triage error), so a moved binary never stops the jobs
+    if tri.enabled and not (isinstance(tri.claude_path, str) and Path(tri.claude_path).is_absolute()):
+        raise ConfigError("triage.claude_path: absolute path to the claude binary")
     if not (isinstance(tri.model, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{2,63}", tri.model)):
         raise ConfigError("triage.model: invalid model id")
     if isinstance(tri.max_budget_usd, bool) or not isinstance(tri.max_budget_usd, (int, float)) \
@@ -69,8 +70,8 @@ def load(path: Path = CONFIG_PATH, state_dir: Path = STATE_DIR) -> Config:
 
     roots = []
     for raw in data.get("scan_roots", []):
-        if not (isinstance(raw, str) and Path(raw).is_absolute() and Path(raw).is_dir()):
-            raise ConfigError(f"scan_roots: not an existing absolute dir: {raw!r}")
+        if not (isinstance(raw, str) and Path(raw).is_absolute()):   # missing dirs are not_scanned at run time
+            raise ConfigError(f"scan_roots: not an absolute path: {raw!r}")
         roots.append(Path(raw))
     if not roots:
         raise ConfigError("scan_roots: at least one root is required")

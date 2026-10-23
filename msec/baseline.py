@@ -16,20 +16,32 @@ def classify(findings, seen: dict, accepted: dict, today: date):
         a = accepted.get(fp)
         if a and date.fromisoformat(a["until"]) >= today:
             acc.append(f)
-        elif a or fp not in seen:          # expired acceptance or never shown
-            new.append(f)
+        elif fp not in seen or (a and seen[fp].get("last_seen", "") <= a["until"]):
+            new.append(f)                  # never shown, or first night after the acceptance expired
         else:
             open_items.append(f)
     return new, open_items, acc, sorted(set(seen) - current)
 
 
-def update_seen(seen: dict, findings, today: date) -> dict:
-    """Resolved items drop out, so a reappearance counts as new."""
+def _covered(source: str, skipped: set[str]) -> bool:
+    return any(source == s or source.startswith(s + ".") for s in skipped)
+
+
+def update_seen(seen: dict, findings, today: date, sources: dict | None = None, skipped=()) -> dict:
+    """Resolved items drop out, so a reappearance counts as new.
+    sources: fingerprint -> CheckResult name. skipped: not_scanned check names tonight; items from those
+    checks are absent because nothing looked, so they are carried over instead of counted as resolved."""
+    sources = sources or {}
     out = {}
     for f in findings:
         prev = seen.get(f.fingerprint, {})
         out[f.fingerprint] = {"first_seen": prev.get("first_seen", today.isoformat()),
-                              "last_seen": today.isoformat(), "severity": f.severity, "title": f.title}
+                              "last_seen": today.isoformat(), "severity": f.severity, "title": f.title,
+                              "source": sources.get(f.fingerprint, "")}
+    gaps = {s.removesuffix(".partial") for s in skipped}
+    for fp, prev in seen.items():
+        if fp not in out and _covered(str(prev.get("source", "")), gaps):
+            out[fp] = prev
     return out
 
 

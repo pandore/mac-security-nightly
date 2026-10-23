@@ -36,14 +36,13 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             self.load(triage='extra_args = ["--dangerously-skip-permissions"]')
 
-    def test_relative_or_missing_root_rejected(self):
+    def test_relative_root_rejected_missing_root_allowed(self):
         p = self.tmp / "c.toml"
         p.write_text(f'scan_roots = ["Repos"]\n[triage]\nclaude_path = "{self.claude}"\n')
         with self.assertRaises(config.ConfigError):
             config.load(p, state_dir=self.tmp / "s")
         p.write_text(f'scan_roots = ["{self.tmp}/nope"]\n[triage]\nclaude_path = "{self.claude}"\n')
-        with self.assertRaises(config.ConfigError):
-            config.load(p, state_dir=self.tmp / "s")
+        self.assertEqual(config.load(p, state_dir=self.tmp / "s").scan_roots, (self.tmp / "nope",))
 
     def test_unknown_adapter_rejected(self):
         with self.assertRaises(config.ConfigError):
@@ -56,14 +55,15 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(top=top, triage=triage), self.assertRaises(config.ConfigError):
                 self.load(top=top, triage=triage)
 
-    def test_missing_claude_binary_rejected_only_when_triage_enabled(self):
+    def test_claude_path_must_be_absolute_but_may_be_missing(self):
         p = self.tmp / "c.toml"
-        p.write_text(f'scan_roots = ["{self.root}"]\n[triage]\nclaude_path = "/nonexistent/claude"\n')
+        p.write_text(f'scan_roots = ["{self.root}"]\n[triage]\nclaude_path = "claude"\n')
         with self.assertRaises(config.ConfigError):
             config.load(p, state_dir=self.tmp / "s")
+        p.write_text(f'scan_roots = ["{self.root}"]\n[triage]\nclaude_path = "/nonexistent/claude"\n')
+        self.assertEqual(config.load(p, state_dir=self.tmp / "s").triage.claude_path, "/nonexistent/claude")
         p.write_text(f'scan_roots = ["{self.root}"]\n[triage]\nenabled = false\n')
         self.assertFalse(config.load(p, state_dir=self.tmp / "s").triage.enabled)
-
 
 if __name__ == "__main__":
     unittest.main()

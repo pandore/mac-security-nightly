@@ -8,52 +8,84 @@ from pathlib import Path
 from . import baseline, config, report, state, summary
 from . import deliver as deliver_mod
 from . import triage as triage_mod
-from .checks import Ctx, agents, packages, persistence
-from .findings import not_scanned
+from .checks import Ctx, agents, guard, packages, persistence
+from .findings import Finding, clean, not_scanned, result
 
 CHECKS = (persistence.run, agents.run, packages.run)
+CONFIG_TEXT = "⚠ msec: конфіг не читається — msec status"
 
 
 def collect(ctx, checks=CHECKS) -> list:
     results = []
-    for fn in checks:
-        try:
-            results.extend(fn(ctx))
-        except Exception as e:      # one broken check must not hide the others
-            results.append(not_scanned(fn.__module__.rsplit(".", 1)[-1], f"check crashed: {type(e).__name__}: {e}"))
+    for fn in checks:   # one broken check must not hide the others
+        results.extend(guard(fn.__module__.rsplit(".", 1)[-1], fn, ctx))
     return results
 
 
-def nightly(cfg, force: bool = False, checks=CHECKS, do_deliver: bool = True) -> int:
+def coverage(results) -> list:
+    """Every not_scanned check becomes a medium finding: it alerts once, then sits in the digest."""
+    return [result("coverage", [Finding("coverage", "coverage", "medium", f"Not scanned: {r.check} — {r.reason}",
+                                        {"check": r.check}) for r in results if r.status == "not_scanned"])]
+
+
+def _triage(cfg, items, sandbox):
+    try:
+        return triage_mod.triage(cfg.triage, items, home=Path.home(), cwd=sandbox)
+    except Exception as e:      # the deterministic report must not depend on the model step
+        return None, f"triage crashed: {type(e).__name__}: {clean(e)}"
+
+
+def _run(cfg, force: bool, checks) -> bool:
+    """One nightly run under the lock. -> False if today's run is already complete."""
     started = state.now(cfg.timezone)
     rid = state.run_id(started)
     runs = state.Runs(cfg.state_dir)
     if not runs.start(rid, started, force):
         print(f"run {rid} already complete")
-        return 0
+        return False
     try:
-        state.ensure_dir(cfg.state_dir)
         sandbox = state.ensure_dir(cfg.state_dir / "sandbox")
-        ctx = Ctx(home=Path.home(), scan_roots=cfg.scan_roots, sandbox=sandbox, uid=os.getuid())
-        results = collect(ctx, checks)
-        findings = list({f.fingerprint: f for r in results for f in r.findings}.values())  # dedupe, first wins
+        roots = tuple(r for r in cfg.scan_roots if r.is_dir())
+        results = [not_scanned("config.scan_root", f"scan root is not an existing dir: {r}")
+                   for r in cfg.scan_roots if r not in roots]
+        results += collect(Ctx(home=Path.home(), scan_roots=roots, sandbox=sandbox, uid=os.getuid()), checks)
+        results += coverage(results)
+        uniq, sources = {}, {}      # dedupe by fingerprint, first wins; remember which check produced it
+        for r in results:
+            for f in r.findings:
+                uniq.setdefault(f.fingerprint, f)
+                sources.setdefault(f.fingerprint, r.check)
+        findings = list(uniq.values())
         seen = state.read_json(cfg.state_dir / "seen.json", {})
         accepted = (state.read_json(cfg.state_dir / "baseline.json", {}) or {}).get("accepted", {})
         if not isinstance(accepted, dict):
             accepted = {}
         today = started.date()
-        new, open_items, acc, resolved = baseline.classify(findings, seen, accepted, today)
+        new, open_items, acc, _ = baseline.classify(findings, seen, accepted, today)
+        skipped = [r.check for r in results if r.status == "not_scanned"]
+        new_seen = baseline.update_seen(seen, findings, today, sources, skipped)
+        resolved = sorted(set(seen) - set(new_seen))
         open_crit = [f for f in open_items if f.severity == "critical"]
-        tri, tri_err = triage_mod.triage(cfg.triage, new + open_crit, home=Path.home(), cwd=sandbox)
+        tri, tri_err = _triage(cfg, new + open_crit, sandbox)
         day = state.ensure_dir(cfg.state_dir / "reports" / rid)
         state.write_json(day / "findings.json", [f.to_json() for f in findings])
         state.write_text(day / "report.md", report.render(rid, new, open_items, acc, resolved, results, tri, tri_err))
         state.write_json(day / "summary.json", summary.build(rid, new, open_crit, results))
-        state.write_json(cfg.state_dir / "seen.json", baseline.update_seen(seen, findings, today))
+        state.write_json(cfg.state_dir / "seen.json", new_seen)
         runs.finish(rid, state.now(cfg.timezone), "complete")
     except Exception as e:
         runs.finish(rid, state.now(cfg.timezone), "failed", f"{type(e).__name__}: {e}")
         raise
+    return True
+
+
+def nightly(cfg, force: bool = False, checks=CHECKS, do_deliver: bool = True) -> int:
+    with state.locked(cfg.state_dir / "nightly.lock", blocking=False) as got:
+        if not got:
+            print("nightly already running")
+            return 0
+        if not _run(cfg, force, checks):
+            return 0
     return deliver_mod.deliver(cfg) if do_deliver else 0
 
 
@@ -106,6 +138,8 @@ def main(argv: list[str]) -> int:
         cfg = config.load()
     except (config.ConfigError, TypeError, ValueError, OSError) as e:
         print(f"msec: config error: {e}", file=sys.stderr)
+        if args.cmd == "deliver":     # otherwise a broken config silences both jobs
+            deliver_mod.notify_macos(CONFIG_TEXT)
         return 2
     if args.cmd == "nightly":
         return nightly(cfg, force=args.force)
