@@ -1,4 +1,6 @@
 """Run external commands with a fixed argv, a scrubbed environment and a timeout. Never uses a shell."""
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,10 +51,18 @@ def run(argv, *, env: dict[str, str], timeout: float, stdin_text: str | None = N
         cwd: Path | None = None) -> CmdResult:
     argv = tuple(str(a) for a in argv)
     try:
-        p = subprocess.run(argv, input=stdin_text, capture_output=True, text=True,
-                           env=env, timeout=timeout, cwd=cwd, shell=False)
-        return CmdResult(argv, p.returncode, p.stdout, p.stderr)
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
+                                start_new_session=True)
     except FileNotFoundError:
         return CmdResult(argv, None, "", "", missing=True)
-    except subprocess.TimeoutExpired as e:
-        return CmdResult(argv, None, _text(e.stdout), _text(e.stderr), timed_out=True)
+    try:
+        out, err = proc.communicate(input=stdin_text, timeout=timeout)
+        return CmdResult(argv, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # whole group: scanners spawn helpers that hold the pipes
+        except ProcessLookupError:
+            pass
+        out, err = proc.communicate()
+        return CmdResult(argv, None, _text(out), _text(err), timed_out=True)

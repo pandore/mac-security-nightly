@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -31,6 +32,21 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(r.timed_out)
         self.assertIsNone(r.rc)
         self.assertFalse(r.ok)
+
+    def test_timeout_kills_grandchildren(self):
+        t = time.monotonic()
+        r = runner.run(["/bin/sh", "-c", "sleep 30 & sleep 30"], env=runner.scanner_env(self.sandbox), timeout=0.5)
+        self.assertTrue(r.timed_out)
+        self.assertLess(time.monotonic() - t, 5)
+
+    def test_timeout_group_kill_reaps_grandchild(self):
+        pidfile = self.sandbox.parent / "pid"
+        runner.run(["/bin/sh", "-c", f"sleep 30 & echo $! > {pidfile}; sleep 30"],
+                   env=runner.scanner_env(self.sandbox), timeout=0.5)
+        pid = int(pidfile.read_text())
+        time.sleep(0.2)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_missing_binary(self):
         r = runner.run(["/nonexistent/tool"], env=runner.scanner_env(self.sandbox), timeout=5)
