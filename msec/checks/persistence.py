@@ -32,19 +32,25 @@ def _sha(data: bytes) -> str:
 
 
 def signer(ctx, path: str) -> str:
-    """Team ID, 'apple', 'adhoc' or 'unsigned'."""
+    """Team ID, 'apple', 'adhoc', 'unsigned' or 'invalid'."""
     if not os.path.isabs(path):     # never hand codesign a relative path or something that looks like a flag
         return "unsigned"
     r = ctx.cmd(["/usr/bin/codesign", "-dv", "--verbose=2", path], timeout=30)
     err = r.stderr
     if re.search(r"^Signature=adhoc\s*$", err, re.M):
         return "adhoc"
-    if re.search(r"^Authority=.*Software Signing\s*$", err, re.M):
-        return "apple"
     m = re.search(r"^TeamIdentifier=(.+?)\s*$", err, re.M)
-    if m and m.group(1) != "not set":
-        return m.group(1)
-    return "unsigned"
+    team = m.group(1) if m and m.group(1) != "not set" else None
+    apple = re.search(r"^Authority=.*Software Signing\s*$", err, re.M)
+    if not (team or apple):
+        return "unsigned"
+    # -dv only displays the embedded signature; verify it before trusting any claim in it
+    if ctx.cmd(["/usr/bin/codesign", "--verify", "--strict", path], timeout=30).rc != 0:
+        return "invalid"
+    if apple:
+        ok = ctx.cmd(["/usr/bin/codesign", "--verify", "-R=anchor apple", path], timeout=30).rc == 0
+        return "apple" if ok else "invalid"
+    return team
 
 
 def _script_key(args: list) -> dict:
@@ -97,7 +103,7 @@ def scan_launchd(ctx, dirs) -> list:
             domain = f"gui/{ctx.uid}" if d == ctx.home / "Library/LaunchAgents" else "system"
             findings.append(Finding(
                 "persistence.launchd", "persistence",
-                "critical" if script or sig in ("unsigned", "adhoc") else "medium",
+                "critical" if script or sig in ("unsigned", "adhoc", "invalid") else "medium",
                 f"launchd {label} → {prog}{' (script)' if script else ''} [{sig}]",
                 key,
                 details={"label": label, "dir": str(d)},

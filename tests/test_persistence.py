@@ -97,6 +97,36 @@ class SignerTest(unittest.TestCase):
         self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "medium")
 
 
+CS = "/usr/bin/codesign"
+APPLE = "Authority=Software Signing\nTeamIdentifier=not set\n"
+
+
+class SignerVerifyTest(unittest.TestCase):
+    def ctx(self, display, strict=0, anchor=0):
+        return tmp_ctx({(CS, "-dv", "--verbose=2", "/opt/x"): (0, "", display),
+                        (CS, "--verify", "--strict", "/opt/x"): (strict, "", ""),
+                        (CS, "--verify", "-R=anchor apple", "/opt/x"): (anchor, "", "")})
+
+    def test_failed_verify_is_invalid_and_critical(self):
+        ctx = self.ctx("Authority=Dev (ABCDE12345)\nTeamIdentifier=ABCDE12345\n", strict=1)
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "invalid")
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "critical")
+
+    def test_fake_apple_authority_is_invalid(self):
+        self.assertEqual(persistence.signer(self.ctx(APPLE, anchor=3), "/opt/x"), "invalid")
+
+    def test_real_apple_is_apple_and_medium(self):
+        ctx = self.ctx(APPLE)
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "apple")
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        self.assertEqual(by_check(persistence.run(ctx), "persistence.launchd").findings[0].severity, "medium")
+
+    def test_software_signing_ltd_developer_is_team(self):
+        ctx = self.ctx("Authority=Developer ID Application: Software Signing Ltd (ABCDE12345)\nTeamIdentifier=ABCDE12345\n")
+        self.assertEqual(persistence.signer(ctx, "/opt/x"), "ABCDE12345")
+
+
 class PersistenceTest(unittest.TestCase):
     def test_script_launch_agent_is_critical(self):
         ctx = tmp_ctx({"/usr/bin/codesign": SIGNED, "/usr/bin/sfltool": (0, "", ""), "/usr/bin/crontab": (1, "", "crontab: no crontab for u\n")})
@@ -109,6 +139,7 @@ class PersistenceTest(unittest.TestCase):
     def test_signed_agent_is_medium_unsigned_is_critical(self):
         evil = "/Users/u/evil"
         ctx = tmp_ctx({("/usr/bin/codesign", "-dv", "--verbose=2", "/opt/x"): SIGNED,
+                       ("/usr/bin/codesign", "--verify", "--strict", "/opt/x"): (0, "", ""),
                        ("/usr/bin/codesign", "-dv", "--verbose=2", evil): UNSIGNED})
         write_plist(ctx, "a.plist", ["/opt/x"])
         write_plist(ctx, "b.plist", [evil])
