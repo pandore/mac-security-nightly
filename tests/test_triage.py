@@ -86,5 +86,28 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(err, "claude binary not found")
 
 
+    def test_env_has_only_allowed_keys_and_user(self):
+        import os
+        import pwd
+        e = triage.env(Path("/h"))
+        self.assertEqual(set(e), {"PATH", "HOME", "LANG", "USER", "LOGNAME"})
+        self.assertEqual(e["USER"], pwd.getpwuid(os.getuid()).pw_name)
+        self.assertEqual(e["LOGNAME"], e["USER"])
+
+    def test_parse_rejects_non_object_json(self):
+        for bad in ("[]", "null", '"x"', "1"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                triage.parse(bad, set())
+
+    def test_triage_survives_non_object_stdout(self):
+        from unittest import mock
+        from msec.runner import CmdResult
+        ok = CmdResult(("x",), 0, "null", "")
+        with mock.patch.object(triage, "run", return_value=ok):
+            r, err = triage.triage(T, [f(1)], Path("/tmp"), Path("/tmp"))
+        self.assertIsNone(r)
+        self.assertTrue(err.startswith("triage output rejected"))
+
+
 if __name__ == "__main__":
     unittest.main()

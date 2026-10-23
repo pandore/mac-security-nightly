@@ -1,5 +1,7 @@
 """Nightly triage: Claude with no tools reads findings JSON on stdin and returns schema-checked JSON."""
 import json
+import os
+import pwd
 import re
 from pathlib import Path
 
@@ -55,7 +57,8 @@ def build_argv(t: Triage, stream: bool = False) -> list[str]:
 
 
 def env(home: Path) -> dict[str, str]:
-    return {"PATH": SAFE_PATH, "HOME": str(home), "LANG": "en_US.UTF-8"}
+    user = pwd.getpwuid(os.getuid()).pw_name
+    return {"PATH": SAFE_PATH, "HOME": str(home), "LANG": "en_US.UTF-8", "USER": user, "LOGNAME": user}
 
 
 def validate(data, known: set[str]) -> dict:
@@ -77,6 +80,8 @@ def validate(data, known: set[str]) -> dict:
 
 def parse(stdout: str, known: set[str]) -> dict:
     outer = json.loads(stdout)
+    if not isinstance(outer, dict):
+        raise ValueError("triage output is not a JSON object")
     data = outer.get("structured_output")
     if data is None:
         data = json.loads(outer.get("result", ""))
@@ -97,5 +102,5 @@ def triage(t: Triage, findings: list[Finding], home: Path, cwd: Path, timeout: f
         return None, f"claude exited {r.rc}: {clean(r.stderr, 300)}"
     try:
         return parse(r.stdout, {f.fingerprint for f in findings}), ""
-    except (ValueError, KeyError, TypeError) as e:
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
         return None, f"triage output rejected: {clean(str(e), 200)}"
