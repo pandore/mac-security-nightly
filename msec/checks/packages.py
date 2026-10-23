@@ -6,6 +6,7 @@ import shlex
 from pathlib import Path
 
 from ..findings import Finding, not_scanned, result
+from . import guard
 
 BREW = "/opt/homebrew/bin/brew"
 OSV = "/opt/homebrew/bin/osv-scanner"
@@ -196,4 +197,6 @@ def ioc_files(ctx):
 
 
 def run(ctx) -> list:
-    return [*brew_vulns(ctx), *osv(ctx), *grype(ctx), npm_outdated(ctx), softwareupdate(ctx), ioc_files(ctx)]
+    subs = (("packages.brew", brew_vulns), ("packages.osv", osv), ("packages.grype", grype),
+            ("updates.npm", npm_outdated), ("updates.macos", softwareupdate), ("ioc.files", ioc_files))
+    return [r for name, fn in subs for r in guard(name, fn, ctx)]

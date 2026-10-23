@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 from ..findings import Finding, not_scanned, result
+from . import guard
 
 INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "env", "osascript", "perl",
                 "ruby", "node", "bun", "deno", "php", "swift", "lua", "Rscript"}
@@ -32,6 +33,8 @@ def _sha(data: bytes) -> str:
 
 def signer(ctx, path: str) -> str:
     """Team ID, 'apple', 'adhoc' or 'unsigned'."""
+    if not os.path.isabs(path):     # never hand codesign a relative path or something that looks like a flag
+        return "unsigned"
     r = ctx.cmd(["/usr/bin/codesign", "-dv", "--verbose=2", path], timeout=30)
     m = re.search(r"^TeamIdentifier=(\S+)", r.stderr, re.M)
     if m and m.group(1) != "not set":
@@ -41,6 +44,17 @@ def signer(ctx, path: str) -> str:
     if "Signature=adhoc" in r.stderr:
         return "adhoc"
     return "unsigned"
+
+
+def _script_key(args: list) -> dict:
+    """Hash of the script an interpreter runs: first absolute regular-file argument (covers env/flags)."""
+    path = next((a for a in args[1:] if os.path.isabs(a) and os.path.isfile(a)), None)
+    if path is None:
+        return {}
+    try:
+        return {"script": _sha(Path(path).read_bytes())}
+    except OSError:
+        return {"script": "unreadable"}
 
 
 def scan_launchd(ctx, dirs) -> list:
@@ -55,8 +69,10 @@ def scan_launchd(ctx, dirs) -> list:
             denied.append(str(d))
             continue
         for p in entries:
+            raw = b""
             try:
-                data = plistlib.loads(p.read_bytes())
+                raw = p.read_bytes()
+                data = plistlib.loads(raw)
                 if not isinstance(data, dict) or not isinstance(data.get("ProgramArguments", []), list):
                     raise ValueError("unexpected plist shape")
             except PermissionError:
@@ -64,19 +80,25 @@ def scan_launchd(ctx, dirs) -> list:
                 continue
             except Exception:
                 findings.append(Finding("persistence.launchd", "persistence", "medium",
-                                        f"Unparseable launchd plist {p}", {"plist": str(p), "unparseable": True}))
+                                        f"Unparseable launchd plist {p}",
+                                        {"path": str(p), "plist": _sha(raw), "unparseable": True}))
                 continue
             args = [str(a) for a in data.get("ProgramArguments") or []]
             prog = str(data.get("Program") or (args[0] if args else ""))
-            sig = signer(ctx, prog) if prog else "unsigned"
+            sig = signer(ctx, prog)
             script = is_script(prog, args)
+            # whole-plist hash: EnvironmentVariables (DYLD_INSERT_LIBRARIES), WatchPaths, KeepAlive...
+            key = {"path": str(p), "plist": _sha(raw), "program": prog,
+                   "args": _sha("\0".join(args).encode()), "signer": sig}
+            if script:
+                key.update(_script_key(args))
             label = str(data.get("Label", p.stem))
             domain = f"gui/{ctx.uid}" if d == ctx.home / "Library/LaunchAgents" else "system"
             findings.append(Finding(
                 "persistence.launchd", "persistence",
                 "critical" if script or sig in ("unsigned", "adhoc") else "medium",
                 f"launchd {label} → {prog}{' (script)' if script else ''} [{sig}]",
-                {"plist": str(p), "program": prog, "args": _sha("\0".join(args).encode()), "signer": sig},
+                key,
                 details={"label": label, "dir": str(d)},
                 fix=(f"launchctl bootout {domain} {shlex.quote(str(p))}",)))
     out = [result("persistence.launchd", findings)]
@@ -160,4 +182,5 @@ def run(ctx) -> list:
     dirs = [ctx.home / "Library/LaunchAgents"]
     if ctx.system_dirs:
         dirs += [Path("/Library/LaunchAgents"), Path("/Library/LaunchDaemons")]
-    return [*scan_launchd(ctx, dirs), scan_btm(ctx), scan_cron(ctx), scan_rc(ctx)]
+    return [*guard("persistence.launchd", scan_launchd, ctx, dirs), *guard("persistence.btm", scan_btm, ctx),
+            *guard("persistence.cron", scan_cron, ctx), *guard("persistence.rc", scan_rc, ctx)]

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..findings import not_scanned
 from ..runner import CmdResult, run, scanner_env
 
 
@@ -19,3 +20,14 @@ class Ctx:
         if real_home:
             env["HOME"] = str(self.home)
         return run(argv, env=env, timeout=timeout, stdin_text=stdin_text)
+
+
+def guard(name: str, fn, *args) -> list:
+    """Run one (sub-)check; an exception becomes not_scanned instead of hiding its siblings."""
+    try:
+        out = fn(*args)
+    except PermissionError as e:
+        return [not_scanned(name, f"permission denied: {e.filename}")]
+    except Exception as e:
+        return [not_scanned(name, f"check crashed: {type(e).__name__}: {e}")]
+    return out if isinstance(out, list) else [out]

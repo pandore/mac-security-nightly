@@ -140,6 +140,19 @@ class PackagesTest(unittest.TestCase):
         self.assertEqual([f.severity for f in by(res, "packages.osv").findings].count("critical"), 1)
         self.assertEqual(by(res, "packages.osv.partial").status, "not_scanned")
 
+    def test_crashing_sub_check_keeps_its_siblings(self):
+        odd = {"results": [{"source": {"path": "/r/x"}, "packages": [
+            {"package": {"name": "p", "version": "1", "ecosystem": "npm"}, "groups": [{"ids": 5}]}]}]}
+        res = packages.run(self.ctx(**{"/opt/homebrew/bin/osv-scanner": ok(odd)}))
+        self.assertEqual(by(res, "packages.osv").status, "not_scanned")
+        self.assertIn("check crashed: TypeError", by(res, "packages.osv").reason)
+        for check in ("packages.brew", "packages.grype", "updates.npm", "updates.macos", "ioc.files"):
+            self.assertEqual(by(res, check).status, "ok", check)
+        bad_brew = {"findings": [{"formula": "f", "vulnerabilities": [{"id": "C", "fixed_versions": 5}]}]}
+        res = packages.run(self.ctx(**{BREW: ok(bad_brew), "/opt/homebrew/bin/osv-scanner": ok(OSV, rc=1)}))
+        self.assertIn("check crashed", by(res, "packages.brew").reason)
+        self.assertIn("critical", [f.severity for f in by(res, "packages.osv").findings])   # MAL- hit survives
+
     def test_npm_error_payload_ignored(self):
         res = packages.run(self.ctx(**{"/opt/homebrew/bin/npm": ok({"error": {"code": "E"}, **NPM}, rc=1)}))
         self.assertEqual([f.key["package"] for f in by(res, "updates.npm").findings], ["openclaw"])

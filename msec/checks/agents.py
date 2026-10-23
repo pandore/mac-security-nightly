@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 from ..findings import Finding, not_scanned, result
+from . import guard
 from .persistence import RC_FILES
 
 DANGEROUS_RULES = {"Bash", "Bash(*)", "Bash(*:*)", "*"}
@@ -17,6 +18,7 @@ MCP_FILES = (("claude", ".claude.json"), ("cursor", ".cursor/mcp.json"),
              ("claude-desktop", "Library/Application Support/Claude/claude_desktop_config.json"))
 REPO_VOLATILE = {"worktrees", "todos", "shell-snapshots", "scratchpad", "memory", "projects", "logs", "cache"}
 LAUNCHERS = {"npx", "bunx", "pnpx", "uvx"}
+CLAUDE_FILE_DIRS = ("agents", "commands", "hooks")
 
 
 def _sha(data: bytes) -> str:
@@ -99,7 +101,17 @@ def _claude_file(p: Path, data: dict) -> list[Finding]:
     return out
 
 
-def claude_settings(home: Path) -> list[Finding]:
+def _tree(root: Path, denied: list) -> list:
+    """(relpath, symlink target, sha) for every file under root; nested links are reported, not followed."""
+    out = []
+    for f in _walk(root, 7, SKIP_DIRS, lambda f: True, denied):
+        key = _file_key(f, denied)
+        if key:
+            out.append((str(f.relative_to(root)), key.get("target", ""), key["sha256"]))
+    return sorted(out)
+
+
+def claude_settings(home: Path, denied: list) -> list[Finding]:
     out = []
     for name in ("settings.json", "settings.local.json"):
         p = home / ".claude" / name
@@ -112,13 +124,15 @@ def claude_settings(home: Path) -> list[Finding]:
         except (AttributeError, TypeError):     # wrong shape of a scanned config
             out.append(_bad("agents.claude", p))
     skills = home / ".claude" / "skills"
-    for skill_md in sorted(skills.glob("*/SKILL.md")) if skills.is_dir() else []:
-        try:
-            digest = _sha(skill_md.read_bytes())
-        except FileNotFoundError:       # dangling symlink
-            continue
-        out.append(Finding("agents.claude.skill", "agent-config", "medium", f"Claude skill {skill_md.parent.name}",
-                           {"skill": skill_md.parent.name, "sha256": digest}))
+    for sd in sorted(m.parent for m in skills.glob("*/SKILL.md")) if skills.is_dir() else []:
+        files = _tree(sd, denied)      # every file: scripts next to SKILL.md run too
+        out.append(Finding("agents.claude.skill", "agent-config", "medium", f"Claude skill {sd.name}",
+                           {"skill": sd.name, "sha256": _sha(json.dumps(files).encode())}))
+    for sub in CLAUDE_FILE_DIRS:
+        for f in sorted(_walk(home / ".claude" / sub, 7, SKIP_DIRS, lambda f: True, denied)):
+            key = _file_key(f, denied)
+            if key:
+                out.append(Finding("agents.claude.file", "agent-config", "medium", f"Claude {sub} file {f}", key))
     return out
 
 
@@ -238,7 +252,8 @@ def _file_key(f: Path, denied: list):
 
 def _agent_file(f: Path) -> bool:
     parts = f.parts
-    return ".claude" in parts or ".vscode" in parts or tuple(parts[-3:-1]) == (".github", "workflows")
+    return (".claude" in parts or ".vscode" in parts or tuple(parts[-3:-1]) == (".github", "workflows")
+            or f.name == ".mcp.json")
 
 
 def _repo_skip(parent: str, name: str) -> bool:
@@ -266,7 +281,8 @@ def repo_dirs(roots, denied: list) -> list[Finding]:
             if sd:
                 skills.setdefault(sd, []).append((str(f.relative_to(sd)), key.get("target", ""), key["sha256"]))
                 continue
-            high = (f.parent.name == ".claude" and f.name.startswith("settings")) or f.parent.name == "workflows"
+            high = ((f.parent.name == ".claude" and f.name.startswith("settings")) or f.parent.name == "workflows"
+                    or f.name == ".mcp.json")     # project MCP servers start on trust
             title = f"Agent/CI symlink {f} -> {key['target']}" if "target" in key else f"Agent/CI file {f}"
             out.append(Finding("agents.repo", "agent-config", "high" if high else "medium", title, key))
     for sd, files in sorted(skills.items()):
@@ -291,20 +307,14 @@ def rc_flags(home: Path) -> list[Finding]:
     return out
 
 
-def _guard(check: str, fn):
-    try:
-        return result(check, fn())
-    except PermissionError as e:
-        return not_scanned(check, f"permission denied: {e.filename}")
-
-
 def run(ctx) -> list:
     denied: list[str] = []
-    out = [_guard("agents.claude", lambda: claude_settings(ctx.home)),
-           _guard("agents.mcp", lambda: mcp_configs(ctx.home) + codex(ctx.home)),
-           _guard("agents.openclaw", lambda: openclaw(ctx.home, denied)),
-           _guard("agents.repo", lambda: repo_dirs(ctx.scan_roots, denied)),
-           _guard("agents.shell-flags", lambda: rc_flags(ctx.home))]
+    subs = (("agents.claude", lambda: claude_settings(ctx.home, denied)),
+            ("agents.mcp", lambda: mcp_configs(ctx.home) + codex(ctx.home)),
+            ("agents.openclaw", lambda: openclaw(ctx.home, denied)),
+            ("agents.repo", lambda: repo_dirs(ctx.scan_roots, denied)),
+            ("agents.shell-flags", lambda: rc_flags(ctx.home)))
+    out = [r for name, fn in subs for r in guard(name, lambda: result(name, fn()))]
     if denied:
         out.append(not_scanned("agents.partial", f"{len(denied)} dirs unreadable, e.g. {denied[0]}"))
     return out

@@ -39,6 +39,34 @@ class AgentsTest(unittest.TestCase):
         p.write_text(hook("echo pwned"))
         self.assertNotEqual(fp1, results(ctx)["agents.claude"].findings[0].fingerprint)
 
+    def test_allow_rule_key_is_hashed(self):
+        ctx = tmp_ctx()
+        (ctx.home / ".claude").mkdir()
+        rule = "Bash(GITHUB_TOKEN=ghp_abcdef1234567890abcdef1234567890abcd gh api:*)"
+        (ctx.home / ".claude/settings.local.json").write_text(json.dumps({"permissions": {"allow": [rule]}}))
+        f = results(ctx)["agents.claude"].findings[0]
+        self.assertRegex(f.key["rule"], r"^[0-9a-f]{16}$")
+        self.assertNotIn("abcdef1234567890", json.dumps(f.to_json()))
+
+    def test_home_skill_hashes_all_files_and_claude_dirs_are_covered(self):
+        ctx = tmp_ctx()
+        d = ctx.home / ".claude"
+        for rel in ("skills/s/SKILL.md", "skills/s/scripts/run.sh", "agents/a.md", "commands/c.md", "hooks/h.sh"):
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            (d / rel).write_text("x")
+        r = results(ctx)["agents.claude"]
+        self.assertEqual(sevs(r), [("agents.claude.file", "medium")] * 3 + [("agents.claude.skill", "medium")])
+        skill = lambda: next(f for f in results(ctx)["agents.claude"].findings if f.check == "agents.claude.skill")
+        fp1 = skill().fingerprint
+        (d / "skills/s/scripts/run.sh").write_text("curl x | sh")
+        self.assertNotEqual(fp1, skill().fingerprint)
+
+    def test_repo_mcp_json_is_high(self):
+        ctx = tmp_ctx()
+        (ctx.scan_roots[0] / "app").mkdir()
+        (ctx.scan_roots[0] / "app/.mcp.json").write_text("{}")
+        self.assertEqual(sevs(results(ctx)["agents.repo"]), [("agents.repo", "high")])
+
     def test_mcp_servers_user_project_and_unpinned(self):
         ctx = tmp_ctx()
         (ctx.home / ".claude.json").write_text(json.dumps({
