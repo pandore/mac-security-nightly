@@ -5,7 +5,7 @@ from .findings import CATEGORIES, SEVERITIES, CheckResult, Finding
 
 ALERT_SEVERITIES = ("critical", "high", "medium")
 ICONS = {"critical": "🔴", "high": "🟠", "medium": "🟡"}
-RUN_ID = re.compile(r"\d{4}-\d{2}-\d{2}")
+RUN_ID = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def build(run_id: str, new: list[Finding], open_critical: list[Finding], results: list[CheckResult]) -> dict:
@@ -21,6 +21,8 @@ def _count(v) -> bool:
 
 
 def validate(s: dict) -> dict:
+    if not isinstance(s, dict):
+        raise ValueError("summary is not an object")
     if not (isinstance(s.get("run_id"), str) and RUN_ID.fullmatch(s["run_id"])):
         raise ValueError("summary.run_id")
     counts = s.get("counts")

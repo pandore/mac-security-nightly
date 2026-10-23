@@ -48,6 +48,15 @@ class SummaryTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 summary.message(bad)
 
+    def test_validate_rejects_non_object_summary(self):
+        with self.assertRaises(ValueError):
+            summary.message([])
+
+    def test_run_id_is_ascii_digits_only(self):
+        good = summary.build("2026-10-24", [f("high")], [], [])
+        with self.assertRaises(ValueError):
+            summary.message({**good, "run_id": "٢٠٢٦-١٠-٢٤"})
+
 
 if __name__ == "__main__":
     unittest.main()
