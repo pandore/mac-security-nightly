@@ -1,18 +1,24 @@
-"""msec nightly | deliver | accept | status | install"""
+"""msec scan | nightly | deliver | accept | status | install"""
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from . import baseline, config, report, state, summary
 from . import deliver as deliver_mod
 from . import triage as triage_mod
 from .checks import Ctx, agents, guard, packages, persistence
+from .config import Triage
 from .findings import Finding, clean, not_scanned, result
 
 CHECKS = (persistence.run, agents.run, packages.run)
 CONFIG_TEXT = "⚠ msec: конфіг не читається — msec status"
+SCAN_CACHE = Path.home() / "Library/Caches/msec/sandbox"   # scanner caches (grype DB) reused between one-off scans
+ICONS = {"critical": "🔴", "high": "🟠", "medium": "🟡", "info": "⚪"}
 
 
 def collect(ctx, checks=CHECKS) -> list:
@@ -28,11 +34,26 @@ def coverage(results) -> list:
                                         {"check": r.check}) for r in results if r.status == "not_scanned"])]
 
 
-def _triage(cfg, items, sandbox):
+def _triage(tri_cfg, items, sandbox):
     try:
-        return triage_mod.triage(cfg.triage, items, home=Path.home(), cwd=sandbox)
+        return triage_mod.triage(tri_cfg, items, home=Path.home(), cwd=sandbox)
     except Exception as e:      # the deterministic report must not depend on the model step
         return None, f"triage crashed: {type(e).__name__}: {clean(e)}"
+
+
+def gather(roots, sandbox, checks=CHECKS, pre=()):
+    """Run every check -> (results, findings deduped by fingerprint, fingerprint -> producing check)."""
+    existing = tuple(r for r in roots if r.is_dir())
+    results = list(pre) + [not_scanned("config.scan_root", f"scan root is not an existing dir: {r}")
+                           for r in roots if r not in existing]
+    results += collect(Ctx(home=Path.home(), scan_roots=existing, sandbox=sandbox, uid=os.getuid()), checks)
+    results += coverage(results)
+    uniq, sources = {}, {}      # first wins
+    for r in results:
+        for f in r.findings:
+            uniq.setdefault(f.fingerprint, f)
+            sources.setdefault(f.fingerprint, r.check)
+    return results, list(uniq.values()), sources
 
 
 def _run(cfg, force: bool, checks) -> bool:
@@ -45,17 +66,7 @@ def _run(cfg, force: bool, checks) -> bool:
         return False
     try:
         sandbox = state.ensure_dir(cfg.state_dir / "sandbox")
-        roots = tuple(r for r in cfg.scan_roots if r.is_dir())
-        results = [not_scanned("config.scan_root", f"scan root is not an existing dir: {r}")
-                   for r in cfg.scan_roots if r not in roots]
-        results += collect(Ctx(home=Path.home(), scan_roots=roots, sandbox=sandbox, uid=os.getuid()), checks)
-        results += coverage(results)
-        uniq, sources = {}, {}      # dedupe by fingerprint, first wins; remember which check produced it
-        for r in results:
-            for f in r.findings:
-                uniq.setdefault(f.fingerprint, f)
-                sources.setdefault(f.fingerprint, r.check)
-        findings = list(uniq.values())
+        results, findings, sources = gather(cfg.scan_roots, sandbox, checks)
         seen = state.read_json(cfg.state_dir / "seen.json", {})
         accepted = (state.read_json(cfg.state_dir / "baseline.json", {}) or {}).get("accepted", {})
         if not isinstance(accepted, dict):
@@ -66,7 +77,7 @@ def _run(cfg, force: bool, checks) -> bool:
         new_seen = baseline.update_seen(seen, findings, today, sources, skipped)
         resolved = sorted(set(seen) - set(new_seen))
         open_crit = [f for f in open_items if f.severity == "critical"]
-        tri, tri_err = _triage(cfg, new + open_crit, sandbox)
+        tri, tri_err = _triage(cfg.triage, new + open_crit, sandbox)
         day = state.ensure_dir(cfg.state_dir / "reports" / rid)
         state.write_json(day / "findings.json", [f.to_json() for f in findings])
         state.write_text(day / "report.md", report.render(rid, new, open_items, acc, resolved, results, tri, tri_err))
@@ -77,6 +88,42 @@ def _run(cfg, force: bool, checks) -> bool:
         runs.finish(rid, state.now(cfg.timezone), "failed", f"{type(e).__name__}: {e}")
         raise
     return True
+
+
+def scan(roots, checks=CHECKS, tri_cfg: Triage | None = None, out_parent: Path | None = None,
+         cache: Path | None = None) -> Path:
+    """One-off check: no config, no seen/baseline, no notification; everything found is reported as new.
+    Writes into a fresh 0700 folder and returns it."""
+    rid = state.run_id(datetime.now().astimezone())
+    sandbox = state.ensure_dir(cache or SCAN_CACHE)
+    pre = [] if roots else [not_scanned("scan.roots", "no repo folders given: pass --root DIR to scan agent files and lockfiles")]
+    results, findings, _ = gather(tuple(roots), sandbox, checks, pre)
+    tri, tri_err = _triage(tri_cfg, findings, sandbox) if tri_cfg else (None, "")
+    out = Path(tempfile.mkdtemp(prefix=f"msec-scan-{rid}-", dir=out_parent))
+    state.write_json(out / "findings.json", [f.to_json() for f in findings])
+    state.write_text(out / "report.md", report.render(rid, findings, [], [], [], results, tri, tri_err, one_off=True))
+    s = summary.build(rid, findings, [], results)
+    state.write_json(out / "summary.json", s)
+    print(" ".join(f"{ICONS[k]}{v}" for k, v in s["counts"].items()))
+    if s["not_scanned"]:
+        print("not scanned: " + ", ".join(s["not_scanned"]))
+    print(out / "report.md")
+    return out
+
+
+def cmd_scan(args) -> int:
+    roots = [Path(r).expanduser().resolve() for r in args.root] or \
+        [p for p in (Path.home() / "Repos",) if p.is_dir()]
+    tri_cfg = None
+    if args.triage:
+        claude = args.claude or shutil.which("claude") or str(Path.home() / ".local/bin/claude")
+        tri_cfg = Triage(claude_path=str(Path(claude).expanduser()))
+    out_parent = Path(args.out).expanduser() if args.out else None
+    if out_parent and not out_parent.is_dir():
+        print(f"msec scan: --out must be an existing folder: {out_parent}", file=sys.stderr)
+        return 2
+    scan(roots, CHECKS, tri_cfg, out_parent)
+    return 0
 
 
 def nightly(cfg, force: bool = False, checks=CHECKS, do_deliver: bool = True) -> int:
@@ -124,6 +171,11 @@ def cmd_status(cfg) -> int:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="msec")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sc = sub.add_parser("scan", help="one-off check: no config, no baseline, no notification")
+    sc.add_argument("--root", action="append", default=[], help="folder with your repos (repeatable; default ~/Repos)")
+    sc.add_argument("--triage", action="store_true", help="explain findings with claude -p (no tools)")
+    sc.add_argument("--claude", help="path to the claude binary (default: found on PATH)")
+    sc.add_argument("--out", help="existing folder to put the report folder in (default: temp)")
     sub.add_parser("nightly").add_argument("--force", action="store_true")
     sub.add_parser("deliver")
     a = sub.add_parser("accept")
@@ -134,6 +186,8 @@ def main(argv: list[str]) -> int:
     sub.add_parser("status")
     sub.add_parser("install").add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd == "scan":      # works without a config
+        return cmd_scan(args)
     try:
         cfg = config.load()
     except (config.ConfigError, TypeError, ValueError, OSError) as e:

@@ -27,9 +27,11 @@ def _info_line(items) -> list:
     return [f"- {ICON['info']} info: {parts}", ""]
 
 
-def render(run_id, new, open_items, accepted, resolved, results, triage, triage_error) -> str:
+def render(run_id, new, open_items, accepted, resolved, results, triage, triage_error, one_off=False) -> str:
     tri = (triage or {}).get("items", {})
     lines = [f"# Mac security — {run_id}", ""]
+    if one_off:
+        lines += ["> Разова перевірка (`msec scan`): без baseline, тому все знайдене показано як нове.", ""]
     if triage and triage.get("overview"):
         lines += ["## Огляд (пояснення моделі, не інструкції)", "", _md(triage["overview"]), ""]
     elif triage_error:
@@ -48,13 +50,15 @@ def render(run_id, new, open_items, accepted, resolved, results, triage, triage_
         lines.extend(_info_line(items))
 
     block("Нове", new)
-    block("Відкриті критичні", [f for f in open_items if f.severity == "critical"])
-    rest = sorted((f for f in open_items if f.severity != "critical"), key=lambda x: RANK[x.severity])
-    lines += [f"## Відкриті, дайджест ({len(rest)})", ""]
-    lines += [f"- {ICON[f.severity]} `{f.fingerprint}` {_md(f.title)}" for f in rest if f.severity != "info"] + [""]
-    lines += _info_line(rest)
+    if not one_off:
+        block("Відкриті критичні", [f for f in open_items if f.severity == "critical"])
+        rest = sorted((f for f in open_items if f.severity != "critical"), key=lambda x: RANK[x.severity])
+        lines += [f"## Відкриті, дайджест ({len(rest)})", ""]
+        lines += [f"- {ICON[f.severity]} `{f.fingerprint}` {_md(f.title)}" for f in rest if f.severity != "info"] + [""]
+        lines += _info_line(rest)
     ns = [r for r in results if r.status == "not_scanned"]
     lines += [f"## Не перевірено ({len(ns)})", ""] + [f"- {r.check}: {_md(r.reason)}" for r in ns] + [""]
-    lines += [f"Прийнято: {len(accepted)} · Зникло з минулого разу: {len(resolved)}", "",
-              'Прийняти знахідку: `msec accept <fingerprint> --reason "..." --days 90`', ""]
+    if not one_off:
+        lines += [f"Прийнято: {len(accepted)} · Зникло з минулого разу: {len(resolved)}", "",
+                  'Прийняти знахідку: `msec accept <fingerprint> --reason "..." --days 90`', ""]
     return "\n".join(lines)

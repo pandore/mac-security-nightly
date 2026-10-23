@@ -64,6 +64,19 @@ Set `[triage] enabled = false` to keep everything local.
 - Homebrew Python 3.11+ (`/opt/homebrew/bin/python3`; the Xcode `python3` is too old). No third-party Python packages.
 - Optional: [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI for triage (subscription login or a dedicated API key)
 
+## Try it once
+
+No config, no schedule, no baseline, no notification — just a report of what is on the machine right now:
+
+```sh
+git clone https://github.com/pandore/mac-security-nightly.git && cd mac-security-nightly
+brew bundle --file=Brewfile          # osv-scanner + grype
+bin/msec scan                        # scans ~/Repos if it exists; 3–5 minutes
+bin/msec scan --root ~/code --root ~/work --triage   # your repo folders; --triage adds Claude's explanations
+```
+
+It prints the counts and the path to `report.md` (a fresh private folder in your temp dir, or inside `--out DIR`). Everything is shown as new, because there is no baseline yet — expect thousands of items on a busy dev machine, mostly inventory. Read the 🔴 first. Nothing is written to `~/.local/state/mac-security` and nothing is installed; scanner caches are reused from `~/Library/Caches/msec`.
+
 ## Install
 
 ```sh
