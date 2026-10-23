@@ -31,7 +31,7 @@ def _load(path: Path, parse):
         return {}, False
     try:
         data = parse(raw)
-    except (ValueError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+    except (ValueError, tomllib.TOMLDecodeError, UnicodeDecodeError, RecursionError):
         return {}, True
     return (data if isinstance(data, dict) else {}), not isinstance(data, dict)
 
@@ -53,7 +53,10 @@ def _walk(root: Path, depth: int, skip: set[str], want, denied: list, skip_pair=
             denied.append(str(d))
             continue
         for e in entries:
-            if e.is_dir(follow_symlinks=False):
+            if e.is_symlink():      # Claude Code follows links; report them, never descend
+                if not (skip_pair and skip_pair(d.name, e.name)) and want(Path(e.path)):
+                    yield Path(e.path)
+            elif e.is_dir(follow_symlinks=False):
                 if e.name not in skip and level < depth and not (skip_pair and skip_pair(d.name, e.name)):
                     stack.append((Path(e.path), level + 1))
             elif e.is_file(follow_symlinks=False) and not (skip_pair and skip_pair(d.name, e.name)) and want(Path(e.path)):
@@ -62,17 +65,24 @@ def _walk(root: Path, depth: int, skip: set[str], want, denied: list, skip_pair=
 
 def _claude_file(p: Path, data: dict) -> list[Finding]:
     out = []
-    for event, groups in (data.get("hooks") or {}).items():
-        for g in groups if isinstance(groups, list) else []:
-            g = g if isinstance(g, dict) else {}
+    hooks = data.get("hooks") or {}
+    perms = data.get("permissions") or {}
+    allow = perms.get("allow") if isinstance(perms, dict) else None
+    if not isinstance(hooks, dict) or not isinstance(perms, dict) or not isinstance(allow or [], list):
+        raise TypeError("bad shape")
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            raise TypeError("bad shape")
+        for g in groups:
+            if not isinstance(g, dict):
+                raise TypeError("bad shape")
             for h in g.get("hooks") or []:
                 cmd = str((h or {}).get("command", ""))
                 out.append(Finding("agents.claude.hook", "agent-config", "critical",
                                    f"Claude hook {event} [{g.get('matcher', '')}] in {p}: {cmd}",
                                    {"file": str(p), "event": str(event), "matcher": str(g.get("matcher", "")),
                                     "cmd": _sha(cmd.encode())}))
-    perms = data.get("permissions") or {}
-    for rule in perms.get("allow") or []:
+    for rule in allow or []:
         rule = str(rule)
         out.append(Finding("agents.claude.allow", "agent-permissions",
                            "high" if rule.strip() in DANGEROUS_RULES else "medium",
@@ -124,7 +134,10 @@ def _unpinned(cmd: str, args: list[str]) -> bool:
 def _server_findings(client: str, scope: str, name, s) -> list[Finding]:
     s = s if isinstance(s, dict) else {}
     cmd, url = str(s.get("command", "")), str(s.get("url", ""))
-    args = [str(a) for a in s.get("args") or []]
+    raw_args = s.get("args") or []
+    if not isinstance(raw_args, list):
+        raise TypeError("bad shape")
+    args = [str(a) for a in raw_args]
     key = {"client": client, "scope": scope, "name": str(name)}
     out = [Finding("agents.mcp", "agent-config", "medium", f"MCP server {name} ({client}, {scope}): {cmd or url}",
                    {**key, "def": _sha(json.dumps([cmd, args, url]).encode())})]
@@ -184,14 +197,43 @@ def openclaw(home: Path, denied: list) -> list[Finding]:
     data, bad = _load(p, json.loads)
     if bad:
         out.append(_bad("agents.openclaw", p))
-    profile = (data.get("tools") or {}).get("profile")
+    tools = data.get("tools") or {}
+    if not isinstance(tools, dict):
+        out.append(_bad("agents.openclaw", p))
+        tools = {}
+    profile = tools.get("profile")
     if profile:
         out.append(Finding("agents.openclaw.tools", "agent-permissions", "medium",
                            f"OpenClaw tools profile = {profile}", {"profile": str(profile)}))
     for skill_md in _walk(root, 5, OPENCLAW_SKIP, lambda f: f.name == "SKILL.md", denied):
-        out.append(Finding("agents.openclaw.skill", "agent-config", "medium", f"OpenClaw skill {skill_md.parent.name}",
-                           {"path": str(skill_md), "sha256": _sha(skill_md.read_bytes())}))
+        key = _file_key(skill_md, denied)
+        if key:
+            out.append(Finding("agents.openclaw.skill", "agent-config", "medium",
+                               f"OpenClaw skill {skill_md.parent.name}", key))
     return out
+
+
+def _read(f: Path, denied: list):
+    """File bytes, or None if it vanished (skipped) or is unreadable (recorded in denied)."""
+    try:
+        return f.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        denied.append(str(f))
+        return None
+
+
+def _file_key(f: Path, denied: list):
+    """Finding key for a file or symlink; None if it cannot be read."""
+    if f.is_symlink():
+        target = os.readlink(f)
+        raw = _read(f, denied) if os.path.isfile(f) else b""
+        if raw is None:
+            return None
+        return {"path": str(f), "target": target, "sha256": _sha(raw) if os.path.isfile(f) else ""}
+    raw = _read(f, denied)
+    return None if raw is None else {"path": str(f), "sha256": _sha(raw)}
 
 
 def _agent_file(f: Path) -> bool:
@@ -200,7 +242,7 @@ def _agent_file(f: Path) -> bool:
 
 
 def _repo_skip(parent: str, name: str) -> bool:
-    return (parent == ".claude" and name in REPO_VOLATILE) or name.endswith(".lock")
+    return parent == ".claude" and (name in REPO_VOLATILE or name.endswith(".lock"))
 
 
 def _skill_dir(f: Path):
@@ -217,13 +259,16 @@ def repo_dirs(roots, denied: list) -> list[Finding]:
     skills: dict[Path, list] = {}
     for root in roots:
         for f in _walk(root, 7, SKIP_DIRS, _agent_file, denied, _repo_skip):
+            key = _file_key(f, denied)
+            if key is None:
+                continue
             sd = _skill_dir(f)
             if sd:
-                skills.setdefault(sd, []).append((str(f.relative_to(sd)), _sha(f.read_bytes())))
+                skills.setdefault(sd, []).append((str(f.relative_to(sd)), key.get("target", ""), key["sha256"]))
                 continue
             high = (f.parent.name == ".claude" and f.name.startswith("settings")) or f.parent.name == "workflows"
-            out.append(Finding("agents.repo", "agent-config", "high" if high else "medium",
-                               f"Agent/CI file {f}", {"path": str(f), "sha256": _sha(f.read_bytes())}))
+            title = f"Agent/CI symlink {f} -> {key['target']}" if "target" in key else f"Agent/CI file {f}"
+            out.append(Finding("agents.repo", "agent-config", "high" if high else "medium", title, key))
     for sd, files in sorted(skills.items()):
         out.append(Finding("agents.repo", "agent-config", "medium", f"Agent skill {sd}",
                            {"path": str(sd), "sha256": _sha(json.dumps(sorted(files)).encode())}))

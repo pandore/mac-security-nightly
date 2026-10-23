@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 from msec.checks import agents
@@ -96,6 +97,62 @@ class AgentsTest(unittest.TestCase):
         (repo / ".claude/skills/s/sub/b.md").write_text("y")
         f2 = results(ctx)["agents.repo"].findings
         self.assertNotEqual(f1[0].fingerprint, f2[0].fingerprint)
+
+    def test_symlinks_reported_not_followed(self):
+        ctx = tmp_ctx()
+        repo = ctx.scan_roots[0] / "app"
+        (repo / ".claude/skills").mkdir(parents=True)
+        (repo / "real").mkdir()
+        (repo / "real/SKILL.md").write_text("x")
+        evil = repo / "evil.json"
+        evil.write_text("{}")
+        os.symlink(evil, repo / ".claude/settings.local.json")
+        os.symlink(repo / "real", repo / ".claude/skills/linked")
+        os.symlink(repo / ".claude", repo / ".claude/loop")           # dir loop
+        os.symlink(repo / ".claude/self.md", repo / ".claude/self.md")  # self loop
+        fs = {f.key["path"].split("/app/")[1]: f for f in results(ctx)["agents.repo"].findings}
+        s = fs[".claude/settings.local.json"]
+        self.assertEqual((s.severity, s.key["target"]), ("high", str(evil)))
+        self.assertEqual(fs[".claude/skills/linked"].severity, "medium")
+        self.assertNotIn("real/SKILL.md", " ".join(fs))
+        self.assertEqual(fs[".claude/self.md"].key["sha256"], "")
+        self.assertFalse([k for k in fs if "linked/" in k or "loop/" in k])
+
+    def test_openclaw_bad_tools_and_deep_json(self):
+        ctx = tmp_ctx()
+        (ctx.home / ".openclaw").mkdir()
+        (ctx.home / ".openclaw/openclaw.json").write_text(json.dumps({"tools": "x"}))
+        f = results(ctx)["agents.openclaw"].findings
+        self.assertEqual([(x.severity, x.key.get("unparseable")) for x in f], [("medium", True)])
+        deep = ctx.home / ".claude.json"
+        deep.write_text("[" * 100000 + "]" * 100000)
+        self.assertTrue(all(x.key.get("unparseable") for x in results(ctx)["agents.mcp"].findings))
+
+    def test_claude_and_mcp_shape_gaps(self):
+        for settings in ({"permissions": {"allow": "Bash(*)"}}, {"permissions": {"allow": {"Bash": 1}}},
+                         {"hooks": {"Stop": "x"}}, {"hooks": {"Stop": [1]}}):
+            ctx = tmp_ctx()
+            (ctx.home / ".claude").mkdir()
+            (ctx.home / ".claude/settings.json").write_text(json.dumps(settings))
+            f = results(ctx)["agents.claude"].findings
+            self.assertEqual([(x.severity, x.key.get("unparseable")) for x in f], [("medium", True)], settings)
+        ctx = tmp_ctx()
+        (ctx.home / ".claude.json").write_text(json.dumps(
+            {"mcpServers": {"m": {"command": "npx", "args": "@x/y@latest"}}}))
+        f = results(ctx)["agents.mcp"].findings
+        self.assertEqual([x.key.get("unparseable") for x in f], [True])
+
+    def test_lock_skip_only_directly_under_claude(self):
+        ctx = tmp_ctx()
+        repo = ctx.scan_roots[0] / "app"
+        (repo / ".claude/skills/s").mkdir(parents=True)
+        (repo / ".claude/skills/s/SKILL.md").write_text("x")
+        (repo / ".claude/scheduled_tasks.lock").write_text("x")
+        before = results(ctx)["agents.repo"].findings
+        (repo / ".claude/skills/s/payload.lock").write_text("x")
+        after = results(ctx)["agents.repo"].findings
+        self.assertEqual(len(after), 1)
+        self.assertNotEqual(before[0].fingerprint, after[0].fingerprint)
 
     def test_shell_flags(self):
         ctx = tmp_ctx()
