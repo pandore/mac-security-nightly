@@ -49,21 +49,22 @@ def _shape_guarded(check: str):
     return deco
 
 
-def _json(r, check: str):
-    """-> (data, None) or (None, not_scanned). Scanners exit 1 when they find things, so rc is ignored."""
+def _json(r, check: str, key: str | None = None):
+    """-> (data, None) or (None, not_scanned). Scanners exit 1 when they find things, so rc is ignored.
+    `key`: a field the tool always prints, even when clean; output without it is a failure, not a clean result."""
     if r.missing:
         return None, not_scanned(check, "tool not installed")
     if r.timed_out:
         return None, not_scanned(check, "timed out")
     if not r.stdout.strip():
-        if r.rc not in (0, None):
+        if r.rc not in (0, None) or key:
             return None, not_scanned(check, f"no output (rc={r.rc})")
         return {}, None
     try:
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
         return None, not_scanned(check, f"unexpected output (rc={r.rc})")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or (key and key not in data):
         return None, not_scanned(check, f"unexpected output (rc={r.rc})")
     return data, None
 
@@ -99,7 +100,7 @@ def osv(ctx) -> list:
     for root in ctx.scan_roots:
         scanned += 1
         data, err = _json(ctx.cmd([OSV, "scan", "source", "-r", str(root), "--format", "json"], timeout=1800),
-                          "packages.osv")
+                          "packages.osv", key="results")
         if err:
             errs.append(not_scanned("packages.osv.partial", err.reason))
             continue
@@ -136,7 +137,7 @@ def grype(ctx) -> list:
         if not target.is_dir():
             continue
         scanned += 1
-        data, err = _json(ctx.cmd([GRYPE, f"dir:{target}", "-o", "json", "--quiet"], timeout=1800), "packages.grype")
+        data, err = _json(ctx.cmd([GRYPE, f"dir:{target}", "-o", "json", "--quiet"], timeout=1800), "packages.grype", key="matches")
         if err:
             errs.append(not_scanned("packages.grype.partial", err.reason))
             continue

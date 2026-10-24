@@ -124,6 +124,14 @@ class PackagesTest(unittest.TestCase):
         self.assertEqual(by(res, "packages.brew").status, "not_scanned")
         self.assertEqual(by(res, "updates.npm").status, "ok")
 
+    def test_scanner_that_went_quiet_is_not_scanned_not_clean(self):
+        # osv-scanner and grype print their JSON even when clean; empty or keyless output means they broke
+        quiet = {"/opt/homebrew/bin/osv-scanner": (0, "", ""), "/opt/homebrew/bin/grype": ok({"source": {}})}
+        res = packages.run(self.ctx(**quiet))
+        self.assertEqual(by(res, "packages.osv").status, "not_scanned")
+        self.assertEqual(by(res, "packages.grype").status, "not_scanned")
+        self.assertEqual(by(res, "updates.npm").status, "ok")          # npm prints nothing when nothing is outdated
+
     def test_softwareupdate_failure_is_not_scanned(self):
         res = packages.run(self.ctx(**{"/usr/sbin/softwareupdate": (1, "", "error")}))
         self.assertEqual(by(res, "updates.macos").status, "not_scanned")

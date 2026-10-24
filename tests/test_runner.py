@@ -1,10 +1,13 @@
+import io
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from msec import runner
+from msec.checks import log_cmd
 
 
 class RunnerTest(unittest.TestCase):
@@ -66,6 +69,23 @@ class RunnerTest(unittest.TestCase):
     def test_stdin_is_passed(self):
         r = runner.run(["/bin/cat"], env=runner.scanner_env(self.sandbox), timeout=5, stdin_text="data")
         self.assertEqual(r.stdout, "data")
+
+
+class LogCmdTest(unittest.TestCase):
+    def logged(self, r, secs):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            log_cmd(r, secs)
+        return err.getvalue()
+
+    def test_logs_slow_or_failed_commands_masked(self):
+        quick = runner.CmdResult(("/usr/bin/codesign", "--verify"), 1, "", "not signed")
+        self.assertEqual(self.logged(quick, 0.1), "")                    # rc 1 is a normal answer
+        slow = runner.CmdResult(("/opt/homebrew/bin/osv-scanner", "scan"), 0, "", "query failed token=sk-abcdef1234567890")
+        line = self.logged(slow, 61)
+        self.assertIn("msec: osv-scanner scan: rc=0, 61s, stdout 0 B", line)
+        self.assertNotIn("sk-abcdef1234567890", line)
+        hung = runner.CmdResult(("/usr/bin/sfltool", "dumpbtm"), None, "", "", timed_out=True)
+        self.assertIn("sfltool dumpbtm: timed out", self.logged(hung, 300))
 
 
 if __name__ == "__main__":
